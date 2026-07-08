@@ -1,7 +1,7 @@
 import React from "react";
 import { PredictionCard } from "@/components/FatePoolCard/FatePoolCard";
 import PoolTableView from "./PoolTableView";
-import type { Pool } from "@/lib/types";
+import type { Pool, PoolSortState, PoolSortField } from "@/lib/types";
 import { getPriceFeedName as getPriceFeedNameUtil } from "@/utils/supportedChainFeed";
 import { getChainConfig } from "@/utils/chainConfig";
 import { getHebeswapPairByAddress } from "@/utils/hebeswapConfig";
@@ -33,6 +33,8 @@ interface PoolListProps {
   isConnected?: boolean;
   isConnectedChainSupported?: boolean;
   viewMode: 'grid' | 'table';
+  sortState?: PoolSortState;
+  onSort?: (field: PoolSortField) => void;
 }
 
 const PoolList: React.FC<PoolListProps> = ({
@@ -47,6 +49,8 @@ const PoolList: React.FC<PoolListProps> = ({
   isConnected,
   isConnectedChainSupported,
   viewMode,
+  sortState,
+  onSort,
 }) => {
   if (loading) {
     if (viewMode === 'table') {
@@ -55,8 +59,8 @@ const PoolList: React.FC<PoolListProps> = ({
           <div className="overflow-x-auto">
             <div className="w-full">
               <div className="border-b border-gray-200 bg-gray-50/50 dark:border-gray-800 dark:bg-white/5">
-                <div className="grid grid-cols-5 gap-4 px-6 py-4">
-                  {Array.from({ length: 5 }).map((_, i) => (
+                <div className="grid grid-cols-6 gap-4 px-6 py-4">
+                  {Array.from({ length: 6 }).map((_, i) => (
                     <div key={i} className="h-3 w-2/3 bg-gray-200 dark:bg-gray-700 animate-pulse rounded" />
                   ))}
                 </div>
@@ -64,8 +68,8 @@ const PoolList: React.FC<PoolListProps> = ({
               <div className="divide-y divide-gray-100 dark:divide-gray-800">
                 {Array.from({ length: 5 }).map((_, i) => (
                   <div key={i} className="px-6 py-4">
-                    <div className="grid grid-cols-5 gap-4">
-                      {Array.from({ length: 5 }).map((_, j) => (
+                    <div className="grid grid-cols-6 gap-4">
+                      {Array.from({ length: 6 }).map((_, j) => (
                         <div key={j} className="h-4 bg-gray-200 dark:bg-gray-700 animate-pulse rounded" />
                       ))}
                     </div>
@@ -139,6 +143,8 @@ const PoolList: React.FC<PoolListProps> = ({
               pools={groupedPools[chainId]}
               onUsePool={onUsePool}
               isConnected={isConnected || false}
+              sortState={sortState}
+              onSort={onSort}
             />
           </div>
         ))}
@@ -174,6 +180,9 @@ const PoolList: React.FC<PoolListProps> = ({
                     creator: pool.vaultCreatorFee,
                     treasury: pool.treasuryFee,
                   }}
+                  tvl={pool.tvl}
+                  baseDecimals={pool.baseDecimals}
+                  baseSymbol={pool.baseSymbol}
                   chainName={pool.chainName}
                   onUse={() => onUsePool(pool.id)}
                 />

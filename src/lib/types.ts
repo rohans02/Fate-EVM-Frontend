@@ -72,9 +72,23 @@ export interface Pool extends PredictionPool {
   bullPercentage: number;
   bearPercentage: number;
   previous_price: bigint;
+  // Base-token decimals/symbol + total reserves (bull + bear), for the TVL column
+  baseDecimals: number;
+  baseSymbol: string;
+  tvl: bigint;
   // Additional fee properties for compatibility
   mintFee?: number;
   burnFee?: number;
+}
+
+// Pool Explorer sort controls. tvl sorts on the base-unit reserve total
+// (not USD-normalized, so cross-base-token order is not apples-to-apples).
+export type PoolSortField = 'name' | 'tvl' | 'fees' | 'bullBias';
+export type SortOrder = 'asc' | 'desc';
+
+export interface PoolSortState {
+  field: PoolSortField;
+  order: SortOrder;
 }
 
 export interface PoolStats {
