@@ -8,8 +8,10 @@ export const formatTVL = (tvl: bigint, decimals: number, symbol: string): string
   const value = Number(formatUnits(tvl, decimals));
   if (!isFinite(value)) return `0 ${symbol}`;
   let display: string;
-  if (value >= 1_000_000) display = `${(value / 1_000_000).toFixed(2)}M`;
-  else if (value >= 1_000) display = `${(value / 1_000).toFixed(2)}K`;
+  // Thresholds sit at the rounding boundary (e.g. 999_995, not 1_000_000) so a value
+  // that rounds up to 1000.00 promotes to the next unit instead of showing "1000.00K".
+  if (value >= 999_995) display = `${(value / 1_000_000).toFixed(2)}M`;
+  else if (value >= 999.995) display = `${(value / 1_000).toFixed(2)}K`;
   else if (value >= 0.01) display = value.toFixed(2);
   else if (value > 0) return `< 0.01 ${symbol}`;
   else display = "0";

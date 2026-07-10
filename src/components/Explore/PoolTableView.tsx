@@ -35,10 +35,11 @@ const SortableHeader: React.FC<{
   sortState?: PoolSortState;
   onSort?: (field: PoolSortField) => void;
   className?: string;
-}> = ({ label, field, sortState, onSort, className = "" }) => {
+  title?: string;
+}> = ({ label, field, sortState, onSort, className = "", title }) => {
   if (!onSort) {
     return (
-      <th className={`px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 sm:px-6 sm:py-4 ${className}`}>
+      <th title={title} className={`px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 sm:px-6 sm:py-4 ${className}`}>
         {label}
       </th>
     );
@@ -48,6 +49,7 @@ const SortableHeader: React.FC<{
   return (
     <th
       aria-sort={ariaSort}
+      title={title}
       className={`px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 sm:px-6 sm:py-4 ${className}`}
     >
       <button
@@ -84,7 +86,7 @@ const PoolTableView: React.FC<PoolTableViewProps> = ({ pools, onUsePool, isConne
               <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 sm:px-6 sm:py-4">
                 Price Feed
               </th>
-              <SortableHeader label="TVL" field="tvl" sortState={sortState} onSort={onSort} />
+              <SortableHeader label="TVL" field="tvl" sortState={sortState} onSort={onSort} title="Total value locked, shown in each pool's own base token (not converted to a common unit)." />
               <SortableHeader label="Bull/Bear Split" field="bullBias" sortState={sortState} onSort={onSort} />
               <SortableHeader label="Fees" field="fees" sortState={sortState} onSort={onSort} className="hidden md:table-cell" />
               <th className="hidden px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 md:table-cell sm:px-6 sm:py-4">

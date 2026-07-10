@@ -5,6 +5,7 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuRadioGroup,
@@ -182,24 +183,23 @@ const PoolSearch: React.FC<PoolSearchProps> = ({
               ))}
             </DropdownMenuRadioGroup>
             <DropdownMenuSeparator />
+            {/* Actions are menu items (not plain buttons) so keyboard users can reach them; a plain button inside a Radix menu is skipped by roving focus. */}
             <div className="flex items-center gap-2 px-2 py-1.5">
-              <button
-                type="button"
-                onClick={resetStaged}
+              <DropdownMenuItem
+                onSelect={resetStaged}
                 disabled={!stagedHasFilters && activeFilterCount === 0}
-                className="flex-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-800"
+                className="flex-1 justify-center rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 dark:border-gray-600 dark:text-gray-200"
               >
                 Reset
-              </button>
-              <button
-                type="button"
-                onClick={applyFilters}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={applyFilters}
                 disabled={!stagedDirty}
-                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex-1 justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500 focus:bg-blue-500 dark:focus:bg-blue-500"
               >
                 <Check size={14} />
                 Apply
-              </button>
+              </DropdownMenuItem>
             </div>
           </DropdownMenuContent>
         </DropdownMenu>
