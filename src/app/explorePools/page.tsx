@@ -600,11 +600,11 @@ function ExploreFatePoolsClient() {
 
   // Facet options derived from the loaded pools (distinct base tokens + price feeds).
   const baseTokenOptions = useMemo((): string[] =>
-    [...new Set(pools.map(p => p.baseSymbol).filter(s => s && s !== "UNKNOWN"))].sort(),
+    [...new Set(pools.map(p => p.baseSymbol).filter(s => s && s !== "UNKNOWN"))].toSorted(),
     [pools]
   );
   const priceFeedOptions = useMemo((): string[] =>
-    [...new Set(pools.map(p => getPriceFeedName(p.priceFeedAddress, p.chainId)))].sort(),
+    [...new Set(pools.map(p => getPriceFeedName(p.priceFeedAddress, p.chainId)))].toSorted(),
     [pools]
   );
 
