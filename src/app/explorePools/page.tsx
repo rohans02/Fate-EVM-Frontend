@@ -274,8 +274,8 @@ function ExploreFatePoolsClient() {
                 ? publicClient.readContract({ address: baseTokenAddr, abi: ERC20ABI, functionName: "decimals" }).catch((): number => 18)
                 : Promise.resolve(18),
               hasBaseToken
-                ? publicClient.readContract({ address: baseTokenAddr, abi: ERC20ABI, functionName: "symbol" }).catch((): string => "???")
-                : Promise.resolve("???"),
+                ? publicClient.readContract({ address: baseTokenAddr, abi: ERC20ABI, functionName: "symbol" }).catch((): string => "UNKNOWN")
+                : Promise.resolve("UNKNOWN"),
             ]);
             const baseDecimals = Number(baseDecimalsRaw);
             const baseSymbol = baseSymbolRaw as string;
@@ -419,7 +419,7 @@ function ExploreFatePoolsClient() {
                   previous_price: BigInt(0),
                   // Restore cached base-token metadata; fall back to defaults for pre-existing records.
                   baseDecimals: poolDetails.baseDecimals ?? 18,
-                  baseSymbol: poolDetails.baseTokenSymbol ?? "???",
+                  baseSymbol: poolDetails.baseTokenSymbol ?? "UNKNOWN",
                   tvl: bull.asset_balance + bear.asset_balance
                 });
               }
@@ -600,7 +600,7 @@ function ExploreFatePoolsClient() {
 
   // Facet options derived from the loaded pools (distinct base tokens + price feeds).
   const baseTokenOptions = useMemo((): string[] =>
-    Array.from(new Set(pools.map(p => p.baseSymbol).filter(s => s && s !== "???"))).sort(),
+    Array.from(new Set(pools.map(p => p.baseSymbol).filter(s => s && s !== "UNKNOWN"))).sort(),
     [pools]
   );
   const priceFeedOptions = useMemo((): string[] =>
