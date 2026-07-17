@@ -13,6 +13,7 @@ import { formatUnits, parseUnits, type Address, createPublicClient, http, isAddr
 import { PredictionPoolABI } from '@/utils/abi/PredictionPool';
 import { CoinABI } from '@/utils/abi/Coin';
 import { ERC20ABI } from '@/utils/abi/ERC20';
+import { IOracleABI } from '@/utils/abi/IOracle';
 import { ChainlinkOracleABI } from '@/utils/abi/ChainlinkOracle';
 import { toast } from 'sonner';
 import { updateOracle } from '@/lib/vaultUtils';
@@ -25,6 +26,7 @@ import { Loading } from '@/components/ui/loading';
 import { formatNumber, formatNumberDown } from '@/utils/format';
 import { validateTransactionInput } from '@/lib/validation';
 import { withErrorHandling, createTransactionError } from '@/lib/errorHandler';
+import { estimateBuy, DENOMINATOR, type BuyQuoteFailure } from '@/lib/estimateBuy';
 
 // Note: ChainlinkAdapterFactories is imported but can be used for future oracle management features
 import TradingViewWidget from '@/components/ui/TradingViewWidget';
@@ -56,6 +58,11 @@ const usePool = (poolId: Address | undefined, isConnected: boolean) => {
     mint_fee: number;
     burn_fee: number;
     treasury_fee: number;
+    mint_fee_rate?: bigint;
+    creator_fee_rate?: bigint;
+    treasury_fee_rate?: bigint;
+    previous_price?: bigint;
+    oracle_price?: bigint;
     bull_percentage: number;
     bear_percentage: number;
     base_decimals: number;
@@ -82,12 +89,13 @@ const usePool = (poolId: Address | undefined, isConnected: boolean) => {
   const baseToken = poolData?.[0]?.result as Address;
   const bullAddr = poolData?.[1]?.result as Address;
   const bearAddr = poolData?.[2]?.result as Address;
-  // const prevPrice = poolData?.[3]?.result as bigint;
   const oracle = poolData?.[4]?.result as Address;
   const poolName = poolData?.[5]?.result as string;
 
+  // The four rebalance-simulation inputs (both reserves, previousPrice, oraclePrice) share one
+  // multicall so they resolve at the same block; splitting them risks a stale oldPrice.
   const { data: tokenData } = useReadContracts({
-    contracts: bullAddr && bearAddr ? [
+    contracts: bullAddr && bearAddr && oracle ? [
       { address: bullAddr, abi: CoinABI, functionName: 'name' },
       { address: bullAddr, abi: CoinABI, functionName: 'symbol' },
       { address: bullAddr, abi: CoinABI, functionName: 'totalSupply' },
@@ -98,9 +106,11 @@ const usePool = (poolId: Address | undefined, isConnected: boolean) => {
       { address: baseToken, abi: ERC20ABI, functionName: 'balanceOf', args: [bearAddr] },
       { address: baseToken, abi: ERC20ABI, functionName: 'decimals' },
       { address: baseToken, abi: ERC20ABI, functionName: 'symbol' },
+      { address: oracle, abi: IOracleABI, functionName: 'getLatestPrice' },
+      { address: poolId as Address, abi: PredictionPoolABI, functionName: 'previousPrice' },
     ] : [],
     query: {
-      enabled: !!(bullAddr && bearAddr),
+      enabled: !!(bullAddr && bearAddr && oracle),
     }
   });
 
@@ -158,6 +168,8 @@ const usePool = (poolId: Address | undefined, isConnected: boolean) => {
       // Reserves are base-token balances, denominated in base-token decimals (not 18).
       const baseDecimals = tokenData?.[8]?.result !== undefined ? Number(tokenData[8].result) : 18;
       const baseSymbol = tokenData?.[9]?.result as string || 'tokens';
+      const oraclePrice = tokenData?.[10]?.result as bigint | undefined;
+      const previousPrice = tokenData?.[11]?.result as bigint | undefined;
 
       const totalReserves = Number(formatUnits(bullReserve, baseDecimals)) + Number(formatUnits(bearReserve, baseDecimals));
       const bullPercentage = totalReserves > 0 ? (Number(formatUnits(bullReserve, baseDecimals)) / totalReserves) * 100 : 50;
@@ -195,6 +207,12 @@ const usePool = (poolId: Address | undefined, isConnected: boolean) => {
         mint_fee: poolFeeData?.[0]?.result ? Number(poolFeeData[0].result) / 1000 : 0,
         burn_fee: poolFeeData?.[1]?.result ? Number(poolFeeData[1].result) / 1000 : 0,
         treasury_fee: poolFeeData?.[3]?.result ? Number(poolFeeData[3].result) / 1000 : 0,
+        // The *_fee fields above are lossy display percentages; the estimate needs raw rates.
+        mint_fee_rate: poolFeeData?.[0]?.result as bigint | undefined,
+        creator_fee_rate: poolFeeData?.[2]?.result as bigint | undefined,
+        treasury_fee_rate: poolFeeData?.[3]?.result as bigint | undefined,
+        previous_price: previousPrice,
+        oracle_price: oraclePrice,
         bull_percentage: bullPercentage,
         bear_percentage: bearPercentage,
         base_decimals: baseDecimals,
@@ -225,6 +243,29 @@ const formatValue = (value: number, symbol: string) => `${formatNumber(value, 3)
 // Timeout duration for stuck transactions (5 minutes)
 const TX_TIMEOUT_MS = 5 * 60 * 1000;
 
+// Prices are scaled by DENOMINATOR; derived from it so the two cannot drift.
+const PRICE_DECIMALS = DENOMINATOR.toString().length - 1;
+
+const BUY_QUOTE_MESSAGES: Record<BuyQuoteFailure, string> = {
+  'amount-below-fees': 'Too small to trade: fees round up to more than this amount.',
+  'empty-reserve': 'This side holds no reserve yet, so it cannot be priced.',
+  'rebalance-reverts': 'Cannot quote at the current oracle price.',
+  'unsupported-decimals': 'This pool\'s base token has unsupported decimals.',
+};
+
+// Display only; the arithmetic is done in bigint upstream.
+const DISPLAY_DECIMALS = 6;
+const MIN_DISPLAY = `<${(10 ** -DISPLAY_DECIMALS).toFixed(DISPLAY_DECIMALS)}`;
+
+// Show a nonzero amount below the display cap as "<0.000001", not a "0" that hides a real charge.
+const formatAmount = (v: bigint, decimals: number) => {
+  const s = formatNumber(Number(formatUnits(v, decimals)), DISPLAY_DECIMALS);
+  return v !== BigInt(0) && s === '0' ? MIN_DISPLAY : s;
+};
+const formatBase = (v: bigint, decimals: number) => formatAmount(v, decimals);
+const formatCoin = (v: bigint) => formatAmount(v, 18);
+const formatPrice = (v: bigint) => formatAmount(v, PRICE_DECIMALS);
+
 function VaultSection({ isBull, poolData, userTokens, price, value, symbol, connected, handlePoll, reserve, supply, tokenAddress, baseDecimals, baseSymbol }: {
   isBull: boolean;
   poolData: {
@@ -242,6 +283,11 @@ function VaultSection({ isBull, poolData, userTokens, price, value, symbol, conn
     mint_fee: number;
     burn_fee: number;
     treasury_fee: number;
+    mint_fee_rate?: bigint;
+    creator_fee_rate?: bigint;
+    treasury_fee_rate?: bigint;
+    previous_price?: bigint;
+    oracle_price?: bigint;
     bull_percentage: number;
     bear_percentage: number;
     chainId: number;
@@ -339,6 +385,43 @@ function VaultSection({ isBull, poolData, userTokens, price, value, symbol, conn
       setAllowance(allowanceData[0].result as bigint);
     }
   }, [allowanceData]);
+
+  // Post-rebalance price is independent of the amount, so re-quote locally per keystroke, no RPC.
+  const buyQuote = useMemo(() => {
+    const {
+      mint_fee_rate, treasury_fee_rate, creator_fee_rate, previous_price, oracle_price,
+    } = poolData;
+    if (
+      mint_fee_rate === undefined || treasury_fee_rate === undefined ||
+      creator_fee_rate === undefined || previous_price === undefined || oracle_price === undefined
+    ) {
+      return null;
+    }
+
+    let amountIn: bigint;
+    try {
+      amountIn = parseUnits(buyAmount, baseDecimals);
+    } catch {
+      return null;
+    }
+    if (amountIn <= BigInt(0)) return null;
+
+    return estimateBuy({
+      amountIn,
+      isBull,
+      bullReserve: poolData.bull_reserve,
+      bearReserve: poolData.bear_reserve,
+      totalSupply: isBull
+        ? poolData.bull_token.fields.total_supply
+        : poolData.bear_token.fields.total_supply,
+      previousPrice: previous_price,
+      oraclePrice: oracle_price,
+      mintFee: mint_fee_rate,
+      treasuryFee: treasury_fee_rate,
+      creatorFee: creator_fee_rate,
+      baseDecimals,
+    });
+  }, [buyAmount, baseDecimals, isBull, poolData]);
 
 
 
@@ -689,6 +772,63 @@ function VaultSection({ isBull, poolData, userTokens, price, value, symbol, conn
                   Max: {formatNumberDown(Number(formatUnits(baseTokenBalance, baseDecimals)), 4)} {baseSymbol}
                 </button>
               </div>
+
+              {buyQuote && (
+                <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 p-3 text-xs">
+                  {!buyQuote.ok ? (
+                    <p className="text-amber-700 dark:text-amber-500">{BUY_QUOTE_MESSAGES[buyQuote.reason]}</p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">You pay</span>
+                        <span className="font-medium text-black dark:text-white">
+                          {formatBase(buyQuote.quote.amountIn, baseDecimals)} {baseSymbol}
+                        </span>
+                      </div>
+
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Fees</span>
+                        <span className="font-medium text-black dark:text-white">
+                          {formatBase(buyQuote.quote.totalFees, baseDecimals)} {baseSymbol}
+                        </span>
+                      </div>
+                      <div className="space-y-1 pl-3 text-gray-500 dark:text-gray-500">
+                        <div className="flex justify-between">
+                          <span>Stays in reserve</span>
+                          <span>{formatBase(buyQuote.quote.vaultAmount, baseDecimals)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Treasury</span>
+                          <span>{formatBase(buyQuote.quote.treasuryAmount, baseDecimals)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Creator</span>
+                          <span>{formatBase(buyQuote.quote.creatorAmount, baseDecimals)}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex justify-between border-t border-neutral-200 pt-1.5 dark:border-neutral-700">
+                        <span className="text-gray-600 dark:text-gray-400">You receive</span>
+                        <span className="font-medium text-black dark:text-white">
+                          {formatCoin(buyQuote.quote.coinsOut)} {symbol}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Effective price</span>
+                        <span className="font-medium text-black dark:text-white">
+                          {formatPrice(buyQuote.quote.effectivePrice)} {baseSymbol}
+                        </span>
+                      </div>
+
+                      <p className="pt-1 text-gray-500 dark:text-gray-500">
+                        Estimate. The oracle can move before your transaction confirms, which changes
+                        how many coins you get. Their value is unaffected.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <Button
                 onClick={() => handleBuy()}
                 className={`w-full ${buttonColor} text-white`}
@@ -1225,6 +1365,11 @@ export default function InteractionClient() {
       mint_fee: pool.mint_fee || 0,
       burn_fee: pool.burn_fee || 0,
       treasury_fee: pool.treasury_fee || 0,
+      mint_fee_rate: pool.mint_fee_rate,
+      creator_fee_rate: pool.creator_fee_rate,
+      treasury_fee_rate: pool.treasury_fee_rate,
+      previous_price: pool.previous_price,
+      oracle_price: pool.oracle_price,
       bull_percentage: pool.bull_percentage || 50,
       bear_percentage: pool.bear_percentage || 50,
       base_decimals: pool.base_decimals ?? 18,
@@ -1246,6 +1391,11 @@ export default function InteractionClient() {
       mint_fee: 0,
       burn_fee: 0,
       treasury_fee: 0,
+      mint_fee_rate: undefined as bigint | undefined,
+      creator_fee_rate: undefined as bigint | undefined,
+      treasury_fee_rate: undefined as bigint | undefined,
+      previous_price: undefined as bigint | undefined,
+      oracle_price: undefined as bigint | undefined,
       bull_percentage: 50,
       bear_percentage: 50,
       base_decimals: 18,
