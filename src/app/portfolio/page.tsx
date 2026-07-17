@@ -1632,11 +1632,8 @@ const EnhancedPoolDataLoader = ({
       const finalOracleAddress = underlyingOracleAddress || oracleAddress;
       const priceFeedName = getPriceFeedName(finalOracleAddress, chainId);
 
-      // Resolve base token symbol now that priceFeedName is available
-      const baseTokenSymbol = rawSymbol ||
-        // Derive from oracle feed name ("ETH / USD" → "ETH") when symbol() reverts on-chain
-        priceFeedName.split('/')[0].trim() ||
-        'TOKEN';
+      // symbol() only: the feed name is a display label, not the base token's identity.
+      const baseTokenSymbol = rawSymbol || 'UNKNOWN';
 
       // Calculate price metrics
       const priceChange = currentPrice - previousPrice;

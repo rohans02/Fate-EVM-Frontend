@@ -604,7 +604,7 @@ function ExploreFatePoolsClient() {
     [pools]
   );
   const priceFeedOptions = useMemo((): string[] =>
-    [...new Set(pools.map(p => getPriceFeedName(p.priceFeedAddress, p.chainId)))].toSorted(),
+    [...new Set(pools.map(p => getPriceFeedName(p.priceFeedAddress, p.chainId)).filter(name => name !== "Unknown"))].toSorted(),
     [pools]
   );
 
