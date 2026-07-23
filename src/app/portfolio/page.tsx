@@ -1453,9 +1453,9 @@ const EnhancedPoolDataLoader = ({
   const storage = useFatePoolsStorage();
   // onSettled must fire exactly once per loader instance (success OR permanent failure)
   const settledRef = useRef(false);
-  // Step 1: Get basic pool information
-  const { data: poolBasicData, status: poolBasicStatus, fetchStatus: poolBasicFetchStatus } = useReadContracts({
-    contracts: [
+  // Wave 1: everything readable straight from the pool address (basics + fees).
+  const { data: poolStaticData, status: poolStaticStatus, fetchStatus: poolStaticFetchStatus } = useReadContracts({
+    contracts: poolAddress ? [
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'poolName' },
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'baseToken' },
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'bullCoin' },
@@ -1463,23 +1463,6 @@ const EnhancedPoolDataLoader = ({
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'oracle' },
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'getCurrentPrice' },
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'previousPrice' },
-    ],
-    query: {
-      enabled: !!poolAddress,
-    }
-  });
-
-  const poolName = poolBasicData?.[0]?.result as string;
-  const baseToken = poolBasicData?.[1]?.result as Address;
-  const bullTokenAddress = poolBasicData?.[2]?.result as Address;
-  const bearTokenAddress = poolBasicData?.[3]?.result as Address;
-  const oracleAddress = poolBasicData?.[4]?.result as Address;
-  const currentPrice = Number(formatUnits(poolBasicData?.[5]?.result as bigint || BigInt(0), 18));
-  const previousPrice = Number(formatUnits(poolBasicData?.[6]?.result as bigint || BigInt(0), 18));
-
-  // Step 2: Get fee information
-  const { data: feeData, fetchStatus: feeFetchStatus } = useReadContracts({
-    contracts: poolAddress ? [
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'mintFee' },
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'burnFee' },
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'creatorFee' },
@@ -1490,9 +1473,18 @@ const EnhancedPoolDataLoader = ({
     }
   });
 
-  // Step 3: Get token metadata and supplies
-  const { data: tokenData, fetchStatus: tokenFetchStatus } = useReadContracts({
-    contracts: bullTokenAddress && bearTokenAddress ? [
+  const poolName = poolStaticData?.[0]?.result as string;
+  const baseToken = poolStaticData?.[1]?.result as Address;
+  const bullTokenAddress = poolStaticData?.[2]?.result as Address;
+  const bearTokenAddress = poolStaticData?.[3]?.result as Address;
+  const oracleAddress = poolStaticData?.[4]?.result as Address;
+  const currentPrice = Number(formatUnits(poolStaticData?.[5]?.result as bigint || BigInt(0), 18));
+  const previousPrice = Number(formatUnits(poolStaticData?.[6]?.result as bigint || BigInt(0), 18));
+
+  // Wave 2: reads that depend on the token/oracle addresses resolved by wave 1.
+  const hasWave2Inputs = !!(baseToken && bullTokenAddress && bearTokenAddress && userAddress);
+  const { data: poolDynamicData, fetchStatus: poolDynamicFetchStatus } = useReadContracts({
+    contracts: hasWave2Inputs ? [
       { address: bullTokenAddress, abi: CoinABI, functionName: 'name' },
       { address: bullTokenAddress, abi: CoinABI, functionName: 'symbol' },
       { address: bullTokenAddress, abi: CoinABI, functionName: 'totalSupply' },
@@ -1500,78 +1492,51 @@ const EnhancedPoolDataLoader = ({
       { address: bearTokenAddress, abi: CoinABI, functionName: 'name' },
       { address: bearTokenAddress, abi: CoinABI, functionName: 'symbol' },
       { address: bearTokenAddress, abi: CoinABI, functionName: 'totalSupply' },
-    ] : [],
-    query: {
-      enabled: !!(bullTokenAddress && bearTokenAddress),
-    }
-  });
-
-  // Step 4: Get reserves (base token balances in bull/bear tokens)
-  const { data: reserveData, fetchStatus: reserveFetchStatus } = useReadContracts({
-    contracts: baseToken && bullTokenAddress && bearTokenAddress ? [
       { address: baseToken, abi: ERC20ABI, functionName: 'balanceOf', args: [bullTokenAddress] },
       { address: baseToken, abi: ERC20ABI, functionName: 'balanceOf', args: [bearTokenAddress] },
       { address: baseToken, abi: ERC20ABI, functionName: 'symbol' },
       { address: baseToken, abi: ERC20ABI, functionName: 'decimals' },
       { address: baseToken, abi: ERC20ABI, functionName: 'name' },
-    ] : [],
-    query: {
-      enabled: !!(baseToken && bullTokenAddress && bearTokenAddress),
-    }
-  });
-
-  // Step 5: Get user balances if user is connected
-  const { data: userBalanceData, fetchStatus: userBalanceFetchStatus } = useReadContracts({
-    contracts: userAddress && bullTokenAddress && bearTokenAddress && baseToken ? [
       { address: bullTokenAddress, abi: CoinABI, functionName: 'balanceOf', args: [userAddress as Address] },
       { address: bearTokenAddress, abi: CoinABI, functionName: 'balanceOf', args: [userAddress as Address] },
       { address: baseToken, abi: ERC20ABI, functionName: 'balanceOf', args: [userAddress as Address] },
+      { address: (oracleAddress && oracleAddress !== "0x0000000000000000000000000000000000000000") ? oracleAddress : baseToken, abi: ChainlinkOracleABI, functionName: 'priceFeed' },
     ] : [],
     query: {
-      enabled: !!(userAddress && bullTokenAddress && bearTokenAddress && baseToken),
-    }
-  });
-
-  // Step 6: Get underlying oracle address
-  const { data: underlyingOracleData, fetchStatus: underlyingOracleFetchStatus } = useReadContracts({
-    contracts: oracleAddress && oracleAddress !== "0x0000000000000000000000000000000000000000" ? [
-      { address: oracleAddress, abi: ChainlinkOracleABI, functionName: 'priceFeed' },
-    ] : [],
-    query: {
-      enabled: !!(oracleAddress && oracleAddress !== "0x0000000000000000000000000000000000000000"),
+      enabled: hasWave2Inputs,
     }
   });
 
   useEffect(() => {
-    if (!poolBasicData || !tokenData || !reserveData || !userBalanceData || !userAddress) return;
+    if (!poolStaticData || !poolDynamicData || !userAddress) return;
 
     const processPoolData = async () => {
-      const bullName = tokenData[0]?.result as string || 'Bull Token';
-      const bullSymbol = tokenData[1]?.result as string || 'BULL';
-      const bullSupply = Number(formatUnits(tokenData[2]?.result as bigint || BigInt(0), 18));
-      const vaultCreator = tokenData[3]?.result as Address || '';
-      const bearName = tokenData[4]?.result as string || 'Bear Token';
-      const bearSymbol = tokenData[5]?.result as string || 'BEAR';
-      const bearSupply = Number(formatUnits(tokenData[6]?.result as bigint || BigInt(0), 18));
+      const bullName = poolDynamicData[0]?.result as string || 'Bull Token';
+      const bullSymbol = poolDynamicData[1]?.result as string || 'BULL';
+      const bullSupply = Number(formatUnits(poolDynamicData[2]?.result as bigint || BigInt(0), 18));
+      const vaultCreator = poolDynamicData[3]?.result as Address || '';
+      const bearName = poolDynamicData[4]?.result as string || 'Bear Token';
+      const bearSymbol = poolDynamicData[5]?.result as string || 'BEAR';
+      const bearSupply = Number(formatUnits(poolDynamicData[6]?.result as bigint || BigInt(0), 18));
 
-      const baseTokenDecimals = Number(reserveData[3]?.result ?? 18);
-      const bullReserve = Number(formatUnits((reserveData[0]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
-      const bearReserve = Number(formatUnits((reserveData[1]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
-      const rawSymbol = reserveData[2]?.result as string | undefined;
-      const symbolCallFailed = (reserveData[2] as { status?: string } | undefined)?.status === 'failure';
+      const baseTokenDecimals = Number(poolDynamicData[10]?.result ?? 18);
+      const bullReserve = Number(formatUnits((poolDynamicData[7]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
+      const bearReserve = Number(formatUnits((poolDynamicData[8]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
+      const rawSymbol = poolDynamicData[9]?.result as string | undefined;
+      const symbolCallFailed = (poolDynamicData[9] as { status?: string } | undefined)?.status === 'failure';
       if (!rawSymbol && !symbolCallFailed) return; // Still in flight — wait for next render
-      const baseTokenName = reserveData[4]?.result as string || 'Unknown Token';
+      const baseTokenName = poolDynamicData[11]?.result as string || 'Unknown Token';
 
-      const userBullTokens = Number(formatUnits((userBalanceData?.[0]?.result as bigint) ?? BigInt(0), 18));
-      const userBearTokens = Number(formatUnits((userBalanceData?.[1]?.result as bigint) ?? BigInt(0), 18));
-      const userBaseTokenBalance = Number(formatUnits((userBalanceData?.[2]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
+      const userBullTokens = Number(formatUnits((poolDynamicData?.[12]?.result as bigint) ?? BigInt(0), 18));
+      const userBearTokens = Number(formatUnits((poolDynamicData?.[13]?.result as bigint) ?? BigInt(0), 18));
+      const userBaseTokenBalance = Number(formatUnits((poolDynamicData?.[14]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
 
       console.log(`🔍 Pool ${poolAddress} user balances:`, {
         userBullTokens,
         userBearTokens,
         userBaseTokenBalance,
-        rawBullBalance: userBalanceData?.[0]?.result,
-        rawBearBalance: userBalanceData?.[1]?.result
+        rawBullBalance: poolDynamicData?.[12]?.result,
+        rawBearBalance: poolDynamicData?.[13]?.result
       });
 
 
@@ -1586,7 +1551,7 @@ const EnhancedPoolDataLoader = ({
         bearReserve,
       });
 
-      const underlyingOracleAddress = underlyingOracleData?.[0]?.result as string;
+      const underlyingOracleAddress = poolDynamicData?.[15]?.result as string;
       const finalOracleAddress = underlyingOracleAddress || oracleAddress;
       const priceFeedName = getPriceFeedName(finalOracleAddress, chainId);
 
@@ -1638,10 +1603,10 @@ const EnhancedPoolDataLoader = ({
       }
 
       const fees = {
-        mintFee: Number(formatUnits(feeData?.[0]?.result as bigint || BigInt(0), 4)),
-        burnFee: Number(formatUnits(feeData?.[1]?.result as bigint || BigInt(0), 4)),
-        creatorFee: Number(formatUnits(feeData?.[2]?.result as bigint || BigInt(0), 4)),
-        treasuryFee: Number(formatUnits(feeData?.[3]?.result as bigint || BigInt(0), 4)),
+        mintFee: Number(formatUnits(poolStaticData?.[7]?.result as bigint || BigInt(0), 4)),
+        burnFee: Number(formatUnits(poolStaticData?.[8]?.result as bigint || BigInt(0), 4)),
+        creatorFee: Number(formatUnits(poolStaticData?.[9]?.result as bigint || BigInt(0), 4)),
+        treasuryFee: Number(formatUnits(poolStaticData?.[10]?.result as bigint || BigInt(0), 4)),
       };
 
       const poolData: PoolData = {
@@ -1714,27 +1679,23 @@ const EnhancedPoolDataLoader = ({
     };
 
     processPoolData();
-  }, [poolBasicData, tokenData, reserveData, userBalanceData, underlyingOracleData, feeData, poolAddress, onDataLoad, onSettled, userAddress, chainId, index, baseToken, bearTokenAddress, bullTokenAddress, currentPrice, oracleAddress, poolName, previousPrice, storage]);
+  }, [poolStaticData, poolDynamicData, poolAddress, onDataLoad, onSettled, userAddress, chainId, index, baseToken, bearTokenAddress, bullTokenAddress, currentPrice, oracleAddress, poolName, previousPrice, storage]);
 
   // Safety-net: fire onSettled when all queries reach a terminal state (success or
   // permanent failure) on paths where processPoolData's early-returns never execute.
-  // Requires poolBasicStatus !== 'pending' to avoid firing before the first fetch runs.
+  // Requires poolStaticStatus !== 'pending' to avoid firing before the first fetch runs.
   useEffect(() => {
     if (settledRef.current) return;
     if (!userAddress) return;
-    if (poolBasicStatus === 'pending') return; // primary query hasn't settled yet
+    if (poolStaticStatus === 'pending') return; // primary query hasn't settled yet
     const allIdle =
-      poolBasicFetchStatus === 'idle' &&
-      feeFetchStatus === 'idle' &&
-      tokenFetchStatus === 'idle' &&
-      reserveFetchStatus === 'idle' &&
-      userBalanceFetchStatus === 'idle' &&
-      underlyingOracleFetchStatus === 'idle';
+      poolStaticFetchStatus === 'idle' &&
+      poolDynamicFetchStatus === 'idle';
     if (allIdle) {
       settledRef.current = true;
       onSettled?.();
     }
-  }, [poolBasicStatus, poolBasicFetchStatus, feeFetchStatus, tokenFetchStatus, reserveFetchStatus, userBalanceFetchStatus, underlyingOracleFetchStatus, userAddress, onSettled]);
+  }, [poolStaticStatus, poolStaticFetchStatus, poolDynamicFetchStatus, userAddress, onSettled]);
 
   return null;
 };
