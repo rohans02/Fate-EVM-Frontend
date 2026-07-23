@@ -3,7 +3,7 @@ import {
 } from "wagmi/chains";
 import { ethereumClassic } from "./chains/EthereumClassic";
 import { getDefaultConfig } from "@rainbow-me/rainbowkit";
-import { http } from "wagmi";
+import { getTransport } from "./rpcTransport";
 
 // const PROJECT_ID = process.env.NEXT_PUBLIC_PROJECT_ID ?? "DEFAULT_PROJECT_ID";
 
@@ -30,8 +30,8 @@ export const config = (() => {
       ethereumClassic, // 61 - Ethereum Classic
     ],
     transports: {
-      [ethereumClassic.id]: http(),
-      [sepolia.id]: http(),
+      [ethereumClassic.id]: getTransport(ethereumClassic.id),
+      [sepolia.id]: getTransport(sepolia.id),
     },
     ssr: true, // Enable SSR for proper hydration
     // Add connection persistence
