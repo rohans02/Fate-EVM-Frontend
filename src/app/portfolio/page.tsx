@@ -177,7 +177,7 @@ const calculateTokenMetricsWithEvents = async (
     // 2. Fetch NEW transactions from blockchain (incremental)
     // Use buffer to avoid missing transactions at block boundaries (reorgs, timing issues)
     const fetchFromBlock = minBlock > 100 ? minBlock - 100 : 0;
-    const newTransactions = await fetchUserTransactions(tokenAddress, userAddress, chainId, fetchFromBlock);
+    const { transactions: newTransactions, scanFailed } = await fetchUserTransactions(tokenAddress, userAddress, chainId, fetchFromBlock);
 
     // 3. Merge and deduplicate using stable IDs
     // Generate deterministic ID for transactions (handles missing transactionHash)
@@ -198,7 +198,20 @@ const calculateTokenMetricsWithEvents = async (
     }
 
     if (transactions.length === 0) {
-      // Fallback to current price if no transactions found
+      // The read failed and nothing was cached, so the cost basis is unknown: show it as unavailable.
+      if (scanFailed) {
+        return {
+          price: currentPrice,
+          currentValue,
+          costBasis: 0,
+          pnL: 0,
+          returns: 0,
+          totalFeesPaid: 0,
+          netInvestment: 0,
+          grossInvestment: 0,
+          costBasisUnavailable: true
+        };
+      }
       const costBasis = userTokens * currentPrice;
       return {
         price: currentPrice,
@@ -208,7 +221,8 @@ const calculateTokenMetricsWithEvents = async (
         returns: 0,
         totalFeesPaid: 0,
         netInvestment: 0,
-        grossInvestment: 0
+        grossInvestment: 0,
+        costBasisUnavailable: false
       };
     }
 
@@ -449,28 +463,30 @@ const calculateTokenMetricsWithEvents = async (
       returns,
       totalFeesPaid,
       netInvestment,
-      grossInvestment
+      grossInvestment,
+      costBasisUnavailable: false
     };
 
   } catch (error) {
     console.error('Error calculating enhanced metrics with events:', error instanceof Error ? error : new Error(String(error)));
-    // Fallback to simple calculation
-    const costBasis = userTokens * currentPrice;
     return {
       price: currentPrice,
       currentValue,
-      costBasis,
+      costBasis: 0,
       pnL: 0,
       returns: 0,
       totalFeesPaid: 0,
       netInvestment: 0,
-      grossInvestment: 0
+      grossInvestment: 0,
+      costBasisUnavailable: true
     };
   }
 };
 
 // Fetch user transactions from blockchain events
 const fetchUserTransactions = async (tokenAddress: string, userAddress: string, chainId: number, minBlock: number = 0) => {
+  // Set when a read fails, so the caller can tell "no history" from "couldn't read history".
+  let scanFailed = false;
   try {
     console.debug(`Fetching transactions for token: ${tokenAddress}, user: ${userAddress}, chain: ${chainId}`, {
       tokenAddress,
@@ -481,7 +497,7 @@ const fetchUserTransactions = async (tokenAddress: string, userAddress: string, 
     const chainConfig = getChainConfig(chainId);
     if (!chainConfig) {
       console.warn('No chain config found for chainId:', { chainId });
-      return [];
+      return { transactions: [], scanFailed: true };
     }
 
     const publicClient = createPublicClient({
@@ -571,32 +587,31 @@ const fetchUserTransactions = async (tokenAddress: string, userAddress: string, 
             error: error?.shortMessage || error?.message
           });
 
-          // If we get a block range error, try with smaller chunks
-          if (error?.message?.includes('range') || error?.message?.includes('blocks')) {
-            console.debug('Retrying with smaller chunk size...');
-            try {
-              const smallerChunkSize = BigInt(1000);
-              for (let smallFromBlock = fromBlock; smallFromBlock <= toBlock; smallFromBlock += smallerChunkSize) {
-                const smallToBlock = smallFromBlock + smallerChunkSize - BigInt(1) > toBlock
-                  ? toBlock
-                  : smallFromBlock + smallerChunkSize - BigInt(1);
+          // If reading logs fails, retry that block range in smaller chunks.
+          console.debug('Retrying with smaller chunk size...');
+          try {
+            const smallerChunkSize = BigInt(1000);
+            for (let smallFromBlock = fromBlock; smallFromBlock <= toBlock; smallFromBlock += smallerChunkSize) {
+              const smallToBlock = smallFromBlock + smallerChunkSize - BigInt(1) > toBlock
+                ? toBlock
+                : smallFromBlock + smallerChunkSize - BigInt(1);
 
-                const smallLogs = await publicClient.getLogs({
-                  address: tokenAddress as Address,
-                  event: eventABI,
-                  args,
-                  fromBlock: smallFromBlock,
-                  toBlock: smallToBlock
-                });
-
-                allLogs.push(...smallLogs);
-              }
-            } catch {
-              console.warn(`Retry also failed for block ${fromBlock} to ${toBlock}`, {
-                fromBlock,
-                toBlock
+              const smallLogs = await publicClient.getLogs({
+                address: tokenAddress as Address,
+                event: eventABI,
+                args,
+                fromBlock: smallFromBlock,
+                toBlock: smallToBlock
               });
+
+              allLogs.push(...smallLogs);
             }
+          } catch {
+            console.warn(`Retry also failed for block ${fromBlock} to ${toBlock}`, {
+              fromBlock,
+              toBlock
+            });
+            scanFailed = true;
           }
         }
       }
@@ -703,11 +718,11 @@ const fetchUserTransactions = async (tokenAddress: string, userAddress: string, 
     console.debug(`Total transactions processed: ${transactions.length}`, {
       transactionCount: transactions.length
     });
-    return transactions;
+    return { transactions, scanFailed };
 
   } catch (error) {
     console.error('Error fetching transactions:', error instanceof Error ? error : new Error(String(error)));
-    return [];
+    return { transactions: [], scanFailed: true };
   }
 };
 
@@ -725,7 +740,7 @@ const calculateTokenMetrics = (
   const returns =
     userTokens === 0 || avgPrice === 0 ? 0 : (pnL / costBasis) * 100;
 
-  return { price, currentValue, costBasis, pnL, returns };
+  return { price, currentValue, costBasis, pnL, returns, costBasisUnavailable: false };
 };
 
 interface PoolData {
@@ -747,6 +762,7 @@ interface PoolData {
   bullReturns: number;
   bearReturns: number;
   totalReturnPercentage: number;
+  costBasisUnavailable?: boolean;
   color: string;
   bullColor: string;
   bearColor: string;
@@ -942,74 +958,6 @@ const HistoricalInvestmentsTable: React.FC<{
   );
 };
 
-// History card component for showing past trades
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const HistoryCard: React.FC<{ pool: PoolData }> = ({ pool }) => {
-  return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 mb-4">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center space-x-2">
-          <div className="text-sm font-medium text-gray-900 dark:text-white">
-            {pool.name}
-          </div>
-          <div className="px-2 py-1 bg-gray-100 dark:bg-gray-700 rounded text-xs text-gray-600 dark:text-gray-300">
-            {pool.priceFeed}
-          </div>
-          <div className="px-2 py-1 bg-orange-100 dark:bg-orange-900 rounded text-xs text-orange-600 dark:text-orange-300">
-            Closed
-          </div>
-        </div>
-        <div className="text-right">
-          <div className={`text-sm font-semibold ${pool.totalPnL >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-            {pool.totalPnL >= 0 ? '+' : ''}{pool.totalPnL.toFixed(4)} {pool.baseTokenSymbol}
-          </div>
-          <div className={`text-xs ${pool.totalReturnPercentage >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-            ({pool.totalReturnPercentage >= 0 ? '+' : ''}{pool.totalReturnPercentage.toFixed(2)}%)
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 text-xs">
-        {/* Bull Position */}
-        {pool.hasBullPosition && (
-          <div className="space-y-1">
-            <div className="text-gray-500 dark:text-gray-400">Bull Position</div>
-            <div className="text-gray-900 dark:text-white">
-              Sold {pool.bullTokenSymbol}
-            </div>
-            <div className={`font-medium ${pool.bullPnL >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-              P&L: {pool.bullPnL >= 0 ? '+' : ''}{pool.bullPnL.toFixed(4)} {pool.baseTokenSymbol}
-            </div>
-            <div className="text-gray-500 dark:text-gray-400">
-              Return: {pool.bullReturns >= 0 ? '+' : ''}{pool.bullReturns.toFixed(2)}%
-            </div>
-          </div>
-        )}
-
-        {/* Bear Position */}
-        {pool.hasBearPosition && (
-          <div className="space-y-1">
-            <div className="text-gray-500 dark:text-gray-400">Bear Position</div>
-            <div className="text-gray-900 dark:text-white">
-              Sold {pool.bearTokenSymbol}
-            </div>
-            <div className={`font-medium ${pool.bearPnL >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-              P&L: {pool.bearPnL >= 0 ? '+' : ''}{pool.bearPnL.toFixed(4)} {pool.baseTokenSymbol}
-            </div>
-            <div className="text-gray-500 dark:text-gray-400">
-              Return: {pool.bearReturns >= 0 ? '+' : ''}{pool.bearReturns.toFixed(2)}%
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-600 flex justify-between text-xs text-gray-500 dark:text-gray-400">
-        <span>Original Investment: {pool.totalCostBasis.toFixed(4)} {pool.baseTokenSymbol}</span>
-        <span>Chain: {pool.chainId === 11155111 ? 'Sepolia' : 'Unknown'}</span>
-      </div>
-    </div>
-  );
-};
 
 // Enhanced summary card component with animations
 const SummaryCard = ({
@@ -1131,29 +1079,38 @@ const PositionCard = ({ pool }: { pool: PoolData }) => {
             })}{" "}
             {pool.baseTokenSymbol}
           </div>
-          <div
-            className={`text-xs font-medium px-2 py-1 rounded-full ${pool.totalPnL >= 0
-              ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-              : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-              }`}
-          >
-            {pool.totalPnL > 0 ? "+" : ""}
-            {pool.totalPnL.toLocaleString(undefined, {
-              minimumFractionDigits: 0,
-              maximumFractionDigits: 4,
-            })}{" "}
-            {pool.baseTokenSymbol} (
-            {pool.totalCostBasis > 0
-              ? ((pool.totalPnL / pool.totalCostBasis) * 100).toLocaleString(
-                undefined,
-                {
-                  minimumFractionDigits: 0,
-                  maximumFractionDigits: 2,
-                }
-              )
-              : "0"}
-            % )
-          </div>
+          {pool.costBasisUnavailable ? (
+            <div
+              className="text-xs font-medium px-2 py-1 rounded-full bg-neutral-100 text-neutral-600 dark:bg-neutral-700/40 dark:text-neutral-300"
+              title="Trade history could not be read from the RPC, so cost basis and P&L are unavailable."
+            >
+              Cost basis unavailable
+            </div>
+          ) : (
+            <div
+              className={`text-xs font-medium px-2 py-1 rounded-full ${pool.totalPnL >= 0
+                ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                }`}
+            >
+              {pool.totalPnL > 0 ? "+" : ""}
+              {pool.totalPnL.toLocaleString(undefined, {
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 4,
+              })}{" "}
+              {pool.baseTokenSymbol} (
+              {pool.totalCostBasis > 0
+                ? ((pool.totalPnL / pool.totalCostBasis) * 100).toLocaleString(
+                  undefined,
+                  {
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 2,
+                  }
+                )
+                : "0"}
+              % )
+            </div>
+          )}
         </div>
       </div>
 
@@ -1706,6 +1663,7 @@ const EnhancedPoolDataLoader = ({
         bullReturns: bullMetrics.returns,
         bearReturns: bearMetrics.returns,
         totalReturnPercentage: (bullMetrics.costBasis + bearMetrics.costBasis) > 0 ? ((bullMetrics.pnL + bearMetrics.pnL) / (bullMetrics.costBasis + bearMetrics.costBasis)) * 100 : 0,
+        costBasisUnavailable: bullMetrics.costBasisUnavailable || bearMetrics.costBasisUnavailable,
         color: CHART_COLORS[index % CHART_COLORS.length],
         bullColor: BULL_COLORS[index % BULL_COLORS.length],
         bearColor: BEAR_COLORS[index % BEAR_COLORS.length],
@@ -1959,6 +1917,7 @@ export default function PortfolioPage() {
     query: {
       enabled: !!(factoryAddress && isAddress(factoryAddress as Address) && factoryAddress !== ZERO_ADDRESS),
       refetchInterval: 30000, // Refetch every 30 seconds for fresh data
+      refetchIntervalInBackground: false,
     }
   });
   const { data: allPoolsData, isPending: isPoolsQueryPending } = poolsQuery;
