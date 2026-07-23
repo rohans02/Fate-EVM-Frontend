@@ -1804,6 +1804,7 @@ const BalanceFilteredPoolLoader: React.FC<{
   }, [settledCount, filteredPools.length, isFiltering, onAllSettled]);
   useEffect(() => {
     const filterPools = async () => {
+      setSettledCount(0);
       if (!userAddress || pools.length === 0) {
         setFilteredPools([]);
         setIsFiltering(false);
