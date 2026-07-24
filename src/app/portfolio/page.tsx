@@ -587,32 +587,8 @@ const fetchUserTransactions = async (tokenAddress: string, userAddress: string, 
             error: error?.shortMessage || error?.message
           });
 
-          // If reading logs fails, retry that block range in smaller chunks.
-          console.debug('Retrying with smaller chunk size...');
-          try {
-            const smallerChunkSize = BigInt(1000);
-            for (let smallFromBlock = fromBlock; smallFromBlock <= toBlock; smallFromBlock += smallerChunkSize) {
-              const smallToBlock = smallFromBlock + smallerChunkSize - BigInt(1) > toBlock
-                ? toBlock
-                : smallFromBlock + smallerChunkSize - BigInt(1);
-
-              const smallLogs = await publicClient.getLogs({
-                address: tokenAddress as Address,
-                event: eventABI,
-                args,
-                fromBlock: smallFromBlock,
-                toBlock: smallToBlock
-              });
-
-              allLogs.push(...smallLogs);
-            }
-          } catch {
-            console.warn(`Retry also failed for block ${fromBlock} to ${toBlock}`, {
-              fromBlock,
-              toBlock
-            });
-            scanFailed = true;
-          }
+          // No retry: re-splitting a rate-limited range multiplies requests and makes it worse.
+          scanFailed = true;
         }
       }
 
