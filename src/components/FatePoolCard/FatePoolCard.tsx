@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowRight, TrendingUp, TrendingDown, Info, Zap } from "lucide-react";
+import { ArrowRight, TrendingUp, TrendingDown, Info, Zap, Layers } from "lucide-react";
 import { RangeSlider } from "./RangeSlider";
 import {
   Tooltip,
@@ -7,6 +7,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { formatTVL } from "@/utils/format";
 
 interface PredictionCardProps {
   name: string;
@@ -25,6 +26,9 @@ interface PredictionCardProps {
     creator: number;
     treasury: number;
   };
+  tvl?: bigint;
+  baseDecimals?: number;
+  baseSymbol?: string;
   chainName?: string;
   onUse?: () => void;
 }
@@ -37,6 +41,9 @@ export function PredictionCard({
   bullPercentage,
   bearPercentage,
   fees,
+  tvl,
+  baseDecimals,
+  baseSymbol,
   chainName,
   onUse,
 }: PredictionCardProps) {
@@ -142,6 +149,19 @@ export function PredictionCard({
             disabled={true}
           />
         </div>
+
+        {/* TVL Section */}
+        {tvl !== undefined && baseDecimals !== undefined && baseSymbol !== undefined && (
+          <div className="flex items-center justify-between px-2 pt-1">
+            <div className="flex items-center gap-1.5 text-xs text-gray-500">
+              <Layers size={12} className="text-indigo-500" />
+              <span className="font-medium">TVL</span>
+            </div>
+            <span className="text-sm font-bold tabular-nums text-gray-900 dark:text-white">
+              {formatTVL(tvl, baseDecimals, baseSymbol)}
+            </span>
+          </div>
+        )}
 
         {/* Fees Section */}
         <div className="flex items-center justify-between px-2 pt-1 border-t border-gray-100 dark:border-zinc-800/50 mt-4">

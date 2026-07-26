@@ -5,6 +5,7 @@ import { useAccount, useWalletClient, useChainId } from "wagmi";
 import { PredictionPoolFactoryABI } from "@/utils/abi/PredictionPoolFactory";
 import { PredictionPoolABI } from "@/utils/abi/PredictionPool";
 import { CoinABI } from "@/utils/abi/Coin";
+import { ERC20ABI } from "@/utils/abi/ERC20";
 import { ChainlinkOracleABI } from "@/utils/abi/ChainlinkOracle";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
@@ -12,7 +13,7 @@ import { formatUnits, isAddress, Address, PublicClient, createPublicClient, http
 import { FatePoolFactories } from "@/utils/addresses";
 import { getPriceFeedName } from "@/utils/supportedChainFeed";
 import { getChainConfig } from "@/utils/chainConfig";
-import type { Token, Pool, ChainLoadingState } from "@/lib/types";
+import type { Token, Pool, ChainLoadingState, PoolSortState, PoolSortField } from "@/lib/types";
 import { useFatePoolsStorage } from "@/lib/fatePoolHook";
 import type { SupportedChainId } from "@/lib/indexeddb/config";
 
@@ -55,6 +56,9 @@ function ExploreFatePoolsClient() {
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [lastFetchTime, setLastFetchTime] = useState<number>(0);
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
+  const [sortState, setSortState] = useState<PoolSortState>({ field: 'tvl', order: 'desc' });
+  const [baseTokenFilter, setBaseTokenFilter] = useState<string>('all');
+  const [priceFeedFilter, setPriceFeedFilter] = useState<string>('all');
 
   const router = useRouter();
   const { isConnected } = useAccount();
@@ -103,6 +107,7 @@ function ExploreFatePoolsClient() {
     coinAddr: string,
     other: string,
     poolAddr: string,
+    baseTokenAddr: string,
     publicClient: PublicClient,
     sourceChainId: SupportedChainId
   ): Promise<Token | null> => {
@@ -111,8 +116,9 @@ function ExploreFatePoolsClient() {
     }
     try {
       const coinAddress = coinAddr as Address;
+      const hasBaseToken = isAddress(baseTokenAddr) && baseTokenAddr !== "0x0000000000000000000000000000000000000000";
       const [
-        cname, csymbol, ccreator, cmintFee, cburnFee, ccreatorFee, ctreasuryFee, csupply, cpriceBuy, cpriceSell, casset
+        cname, csymbol, ccreator, cmintFee, cburnFee, ccreatorFee, ctreasuryFee, csupply, cpriceBuy, cpriceSell, casset, creserve
       ] = await Promise.all([
         publicClient.readContract({ address: coinAddress, abi: CoinABI, functionName: "name" }).catch((): string => "Unknown"),
         publicClient.readContract({ address: coinAddress, abi: CoinABI, functionName: "symbol" }).catch((): string => "N/A"),
@@ -125,11 +131,15 @@ function ExploreFatePoolsClient() {
         publicClient.readContract({ address: coinAddress, abi: CoinABI, functionName: "priceBuy" }).catch((): bigint => BigInt(0)),
         publicClient.readContract({ address: coinAddress, abi: CoinABI, functionName: "priceSell" }).catch((): bigint => BigInt(0)),
         publicClient.readContract({ address: coinAddress, abi: CoinABI, functionName: "asset" }).catch((): Address => "0x0000000000000000000000000000000000000000"),
+        // Reserve = base asset held by this coin contract. Folds into the same multicall batch.
+        hasBaseToken
+          ? publicClient.readContract({ address: baseTokenAddr as Address, abi: ERC20ABI, functionName: "balanceOf", args: [coinAddress] }).catch((): bigint => BigInt(0))
+          : Promise.resolve(BigInt(0)),
       ]);
       const token: Token = {
         id: coinAddress, prediction_pool: poolAddr as Address, other_token: other as Address, asset: casset as Address,
         name: cname as string, symbol: csymbol as string, vault_creator: ccreator as Address, mint_fee: cmintFee as bigint,
-        burn_fee: cburnFee as bigint, creator_fee: ccreatorFee as bigint, treasury_fee: ctreasuryFee as bigint, asset_balance: BigInt(0), supply: csupply as bigint,
+        burn_fee: cburnFee as bigint, creator_fee: ccreatorFee as bigint, treasury_fee: ctreasuryFee as bigint, asset_balance: creserve as bigint, supply: csupply as bigint,
         priceBuy: Number(formatUnits(cpriceBuy as bigint, 5)), priceSell: Number(formatUnits(cpriceSell as bigint, 5)),
       };
       if (isInitialized) {
@@ -256,9 +266,23 @@ function ExploreFatePoolsClient() {
             } else {
               logger.debug(`Pool ${addr}: No oracle address found, using fallback`);
             }
+            // Base-token decimals/symbol (shared by both coins), for the TVL column.
+            const baseTokenAddr = baseToken as Address;
+            const hasBaseToken = isAddress(baseTokenAddr) && baseTokenAddr !== "0x0000000000000000000000000000000000000000";
+            const [baseDecimalsRaw, baseSymbolRaw] = await Promise.all([
+              hasBaseToken
+                ? publicClient.readContract({ address: baseTokenAddr, abi: ERC20ABI, functionName: "decimals" }).catch((): number => 18)
+                : Promise.resolve(18),
+              hasBaseToken
+                ? publicClient.readContract({ address: baseTokenAddr, abi: ERC20ABI, functionName: "symbol" }).catch((): string => "UNKNOWN")
+                : Promise.resolve("UNKNOWN"),
+            ]);
+            const baseDecimals = Number(baseDecimalsRaw);
+            const baseSymbol = baseSymbolRaw as string;
+
             const [bull, bear] = await Promise.all([
-              fetchCoin(bullAddr as Address, bearAddr as Address, addr, publicClient, chainId as SupportedChainId),
-              fetchCoin(bearAddr as Address, bullAddr as Address, addr, publicClient, chainId as SupportedChainId)
+              fetchCoin(bullAddr as Address, bearAddr as Address, addr, baseTokenAddr, publicClient, chainId as SupportedChainId),
+              fetchCoin(bearAddr as Address, bullAddr as Address, addr, baseTokenAddr, publicClient, chainId as SupportedChainId)
             ]);
             if (!bull || !bear) { logger.warn(`Failed to fetch token data for pool ${addr} on chain ${chainId}`); return null; }
             const bullSupply = Number(formatUnits(bull.supply, 18));
@@ -268,7 +292,8 @@ function ExploreFatePoolsClient() {
             const totalValue = bullPriceBuy * bullSupply + bearPriceBuy * bearSupply;
             const bullPercentage = totalValue > 0 ? (bullPriceBuy * bullSupply / totalValue * 100) : 50;
             const bearPercentage = 100 - bullPercentage;
-            const pool: Pool = { id: addr, name: name as string, baseToken: baseToken as Address, priceFeedAddress: underlyingPriceFeedAddress, creator: vaultCreator as Address, bullPercentage: bullPercentage, bearPercentage: bearPercentage, bullToken: bull, bearToken: bear, chainId, chainName: chainConfig.name, vaultFee: Number(mintFee) / DENOMINATOR * 100, vaultCreatorFee: Number(creatorFee) / DENOMINATOR * 100, treasuryFee: Number(treasuryFee) / DENOMINATOR * 100, mintFee: Number(mintFee) / DENOMINATOR * 100, burnFee: Number(burnFee) / DENOMINATOR * 100, previous_price: BigInt(0) };
+            const tvl = bull.asset_balance + bear.asset_balance;
+            const pool: Pool = { id: addr, name: name as string, baseToken: baseToken as Address, priceFeedAddress: underlyingPriceFeedAddress, creator: vaultCreator as Address, bullPercentage: bullPercentage, bearPercentage: bearPercentage, bullToken: bull, bearToken: bear, chainId, chainName: chainConfig.name, vaultFee: Number(mintFee) / DENOMINATOR * 100, vaultCreatorFee: Number(creatorFee) / DENOMINATOR * 100, treasuryFee: Number(treasuryFee) / DENOMINATOR * 100, mintFee: Number(mintFee) / DENOMINATOR * 100, burnFee: Number(burnFee) / DENOMINATOR * 100, previous_price: BigInt(0), baseDecimals, baseSymbol, tvl };
             return pool;
           });
           const successfulPools = (await Promise.all(batchPromises)).filter((pool): pool is Pool => pool !== null);
@@ -283,6 +308,8 @@ function ExploreFatePoolsClient() {
             name: pool.name,
             description: `Prediction pool for ${pool.name}`,
             assetAddress: pool.baseToken,
+            baseTokenSymbol: pool.baseSymbol,
+            baseDecimals: pool.baseDecimals,
             oracleAddress: pool.priceFeedAddress,
             currentPrice: 0, // Will be updated with real price data
             bullReserve: "0",
@@ -389,7 +416,11 @@ function ExploreFatePoolsClient() {
                   bearPercentage: poolDetails.bearPercentage,
                   bullToken: bull,
                   bearToken: bear,
-                  previous_price: BigInt(0)
+                  previous_price: BigInt(0),
+                  // Restore cached base-token metadata; fall back to defaults for pre-existing records.
+                  baseDecimals: poolDetails.baseDecimals ?? 18,
+                  baseSymbol: poolDetails.baseTokenSymbol ?? "UNKNOWN",
+                  tvl: bull.asset_balance + bear.asset_balance
                 });
               }
             }
@@ -558,21 +589,66 @@ function ExploreFatePoolsClient() {
     setSearchQuery("");
   }, []);
 
+  // Clicking a column header re-sorts by that field; clicking the active field flips order.
+  const handleSort = useCallback((field: PoolSortField): void => {
+    setSortState(prev =>
+      prev.field === field
+        ? { field, order: prev.order === 'asc' ? 'desc' : 'asc' }
+        : { field, order: field === 'name' ? 'asc' : 'desc' }
+    );
+  }, []);
+
+  // Facet options derived from the loaded pools (distinct base tokens + price feeds).
+  const baseTokenOptions = useMemo((): string[] =>
+    [...new Set(pools.map(p => p.baseSymbol).filter(s => s && s !== "UNKNOWN"))].toSorted(),
+    [pools]
+  );
+  const priceFeedOptions = useMemo((): string[] =>
+    [...new Set(pools.map(p => getPriceFeedName(p.priceFeedAddress, p.chainId)).filter(name => name !== "Unknown"))].toSorted(),
+    [pools]
+  );
+
   const filteredPools = useMemo(
     (): Pool[] =>
       pools.filter((pool: Pool) => {
         const searchLower = searchQuery.toLowerCase();
         const priceFeedName = getPriceFeedName(pool.priceFeedAddress, pool.chainId);
-        return (
+        const matchesSearch = (
           pool.name.toLowerCase().includes(searchLower) ||
           pool.bullToken.symbol.toLowerCase().includes(searchLower) ||
           pool.bearToken.symbol.toLowerCase().includes(searchLower) ||
           pool.chainName.toLowerCase().includes(searchLower) ||
           priceFeedName.toLowerCase().includes(searchLower)
         );
+        const matchesBaseToken = baseTokenFilter === 'all' || pool.baseSymbol === baseTokenFilter;
+        const matchesPriceFeed = priceFeedFilter === 'all' || priceFeedName === priceFeedFilter;
+        return matchesSearch && matchesBaseToken && matchesPriceFeed;
       }),
-    [pools, searchQuery]
+    [pools, searchQuery, baseTokenFilter, priceFeedFilter]
   );
+
+  // Sort comparator applied WITHIN each chain group. tvl compares base-unit reserve
+  // totals (formatUnits by each pool's own decimals), not USD, so cross-token is approximate.
+  const comparePools = useCallback((a: Pool, b: Pool): number => {
+    const dir = sortState.order === 'asc' ? 1 : -1;
+    switch (sortState.field) {
+      case 'name':
+        return a.name.localeCompare(b.name) * dir;
+      case 'fees': {
+        const feeA = (a.mintFee ?? 0) + (a.burnFee ?? 0) + a.vaultCreatorFee + a.treasuryFee;
+        const feeB = (b.mintFee ?? 0) + (b.burnFee ?? 0) + b.vaultCreatorFee + b.treasuryFee;
+        return (feeA - feeB) * dir;
+      }
+      case 'bullBias':
+        return (a.bullPercentage - b.bullPercentage) * dir;
+      case 'tvl':
+      default: {
+        const tvlA = Number(formatUnits(a.tvl, a.baseDecimals));
+        const tvlB = Number(formatUnits(b.tvl, b.baseDecimals));
+        return (tvlA - tvlB) * dir;
+      }
+    }
+  }, [sortState]);
 
   const groupedPools = useMemo((): Record<number, Pool[]> => {
     const groups: Record<number, Pool[]> = {};
@@ -582,8 +658,11 @@ function ExploreFatePoolsClient() {
       }
       groups[pool.chainId].push(pool);
     });
+    Object.keys(groups).forEach(chainId => {
+      groups[Number(chainId)].sort(comparePools);
+    });
     return groups;
-  }, [filteredPools]);
+  }, [filteredPools, comparePools]);
 
   const sortedChainIds = useMemo((): number[] => {
     const sorted = Object.keys(groupedPools).map(Number).sort();
@@ -633,6 +712,15 @@ function ExploreFatePoolsClient() {
           onClearSearch={clearSearch}
           viewMode={viewMode}
           onViewModeChange={setViewMode}
+          sortState={sortState}
+          onSortFieldChange={handleSort}
+          onSortOrderChange={(order) => setSortState(prev => ({ ...prev, order }))}
+          baseTokenFilter={baseTokenFilter}
+          onBaseTokenFilterChange={setBaseTokenFilter}
+          baseTokenOptions={baseTokenOptions}
+          priceFeedFilter={priceFeedFilter}
+          onPriceFeedFilterChange={setPriceFeedFilter}
+          priceFeedOptions={priceFeedOptions}
         />
         <PoolList
           loading={loading}
@@ -646,6 +734,8 @@ function ExploreFatePoolsClient() {
           isConnected={isConnected}
           isConnectedChainSupported={isConnectedChainSupported}
           viewMode={viewMode}
+          sortState={sortState}
+          onSort={handleSort}
         />
       </div>
     </div>

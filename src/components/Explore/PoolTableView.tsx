@@ -1,8 +1,9 @@
 import React from "react";
-import { ExternalLink, TrendingUp, TrendingDown } from "lucide-react";
-import type { Pool } from "@/lib/types";
+import { ExternalLink, TrendingUp, TrendingDown, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
+import type { Pool, PoolSortState, PoolSortField } from "@/lib/types";
 import { getPriceFeedName as getPriceFeedNameUtil } from "@/utils/supportedChainFeed";
 import { getHebeswapPairByAddress } from "@/utils/hebeswapConfig";
+import { formatTVL } from "@/utils/format";
 
 // Helper function to get oracle name/description
 const getOracleName = (oracleAddress: string, chainId: number): string => {
@@ -23,9 +24,52 @@ interface PoolTableViewProps {
   pools: Pool[];
   onUsePool: (poolId: string) => void;
   isConnected: boolean;
+  sortState?: PoolSortState;
+  onSort?: (field: PoolSortField) => void;
 }
 
-const PoolTableView: React.FC<PoolTableViewProps> = ({ pools, onUsePool, isConnected }) => {
+// Sortable column header. Shows the direction caret only for the active field.
+const SortableHeader: React.FC<{
+  label: string;
+  field: PoolSortField;
+  sortState?: PoolSortState;
+  onSort?: (field: PoolSortField) => void;
+  className?: string;
+  title?: string;
+}> = ({ label, field, sortState, onSort, className = "", title }) => {
+  if (!onSort) {
+    return (
+      <th title={title} className={`px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 sm:px-6 sm:py-4 ${className}`}>
+        {label}
+      </th>
+    );
+  }
+  const active = sortState?.field === field;
+  const ariaSort = active ? (sortState?.order === 'asc' ? 'ascending' : 'descending') : 'none';
+  return (
+    <th
+      aria-sort={ariaSort}
+      title={title}
+      className={`px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 sm:px-6 sm:py-4 ${className}`}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(field)}
+        aria-label={`Sort by ${label}`}
+        className="inline-flex items-center gap-1 uppercase tracking-wider transition-colors hover:text-gray-900 dark:hover:text-white"
+      >
+        {label}
+        {active ? (
+          sortState?.order === 'asc' ? <ChevronUp size={14} /> : <ChevronDown size={14} />
+        ) : (
+          <ChevronsUpDown size={14} className="opacity-40" />
+        )}
+      </button>
+    </th>
+  );
+};
+
+const PoolTableView: React.FC<PoolTableViewProps> = ({ pools, onUsePool, isConnected, sortState, onSort }) => {
   const formatAddress = (address: string) => `${address.slice(0, 6)}...${address.slice(-4)}`;
 
   const formatPercentage = (value: number) => `${value.toFixed(1)}%`;
@@ -38,18 +82,13 @@ const PoolTableView: React.FC<PoolTableViewProps> = ({ pools, onUsePool, isConne
         <table className="w-full border-collapse text-left">
           <thead>
             <tr className="border-b border-gray-200 bg-gray-50/50 dark:border-gray-800 dark:bg-white/5">
-              <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 sm:px-6 sm:py-4">
-                Pool Name
-              </th>
+              <SortableHeader label="Pool Name" field="name" sortState={sortState} onSort={onSort} />
               <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 sm:px-6 sm:py-4">
                 Price Feed
               </th>
-              <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 sm:px-6 sm:py-4">
-                Bull/Bear Split
-              </th>
-              <th className="hidden px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 md:table-cell sm:px-6 sm:py-4">
-                Fees
-              </th>
+              <SortableHeader label="TVL" field="tvl" sortState={sortState} onSort={onSort} title="Total value locked, shown in each pool's own base token (not converted to a common unit)." />
+              <SortableHeader label="Bull/Bear Split" field="bullBias" sortState={sortState} onSort={onSort} />
+              <SortableHeader label="Fees" field="fees" sortState={sortState} onSort={onSort} className="hidden md:table-cell" />
               <th className="hidden px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 md:table-cell sm:px-6 sm:py-4">
                 Actions
               </th>
@@ -78,6 +117,11 @@ const PoolTableView: React.FC<PoolTableViewProps> = ({ pools, onUsePool, isConne
                   </div>
                   <div className="hidden text-xs text-gray-500 dark:text-gray-400 md:block mt-0.5">
                     {formatAddress(pool.priceFeedAddress)}
+                  </div>
+                </td>
+                <td className="px-4 py-4 sm:px-6">
+                  <div className="text-sm font-medium tabular-nums text-gray-900 dark:text-white">
+                    {formatTVL(pool.tvl, pool.baseDecimals, pool.baseSymbol)}
                   </div>
                 </td>
                 <td className="px-4 py-4 sm:px-6">

@@ -126,6 +126,7 @@ export interface PoolDetails {
   assetAddress: string;
   baseTokenSymbol?: string;
   baseTokenName?: string;
+  baseDecimals?: number;
   oracleAddress: string;
   currentPrice: number;
   bullReserve: string;
