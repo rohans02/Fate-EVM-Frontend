@@ -9,10 +9,12 @@ import { ERC20ABI } from "@/utils/abi/ERC20";
 import { ChainlinkOracleABI } from "@/utils/abi/ChainlinkOracle";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
-import { formatUnits, isAddress, Address, PublicClient, createPublicClient, http } from "viem";
+import { formatUnits, isAddress, createPublicClient } from "viem";
+import type { Address, PublicClient } from "viem";
 import { FatePoolFactories } from "@/utils/addresses";
 import { getPriceFeedName } from "@/utils/supportedChainFeed";
 import { getChainConfig } from "@/utils/chainConfig";
+import { getTransport } from "@/utils/rpcTransport";
 import type { Token, Pool, ChainLoadingState, PoolSortState, PoolSortField } from "@/lib/types";
 import { useFatePoolsStorage } from "@/lib/fatePoolHook";
 import type { SupportedChainId } from "@/lib/indexeddb/config";
@@ -184,7 +186,7 @@ function ExploreFatePoolsClient() {
         updateChainState(chainId, { loading: true, error: null });
         const publicClient = createPublicClient({
           chain: chainConfig.chain,
-          transport: http(),
+          transport: getTransport(chainId),
           batch: { multicall: true }
         });
         

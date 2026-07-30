@@ -9,7 +9,7 @@ import {
   useWriteContract,
   useWaitForTransactionReceipt
 } from 'wagmi';
-import { formatUnits, parseUnits, type Address, createPublicClient, http, isAddress } from 'viem';
+import { formatUnits, parseUnits, type Address, createPublicClient, isAddress } from 'viem';
 import { PredictionPoolABI } from '@/utils/abi/PredictionPool';
 import { CoinABI } from '@/utils/abi/Coin';
 import { ERC20ABI } from '@/utils/abi/ERC20';
@@ -35,6 +35,7 @@ import { useTheme } from "next-themes";
 import { Info } from 'lucide-react';
 import { logger } from "@/lib/logger";
 import { getChainConfig } from "@/utils/chainConfig";
+import { getTransport } from "@/utils/rpcTransport";
 
 
 
@@ -968,7 +969,7 @@ export default function InteractionClient() {
       setIsFetchingRebalanceEvents(true);
       const publicClient = createPublicClient({
         chain: activeChain,
-        transport: http()
+        transport: getTransport(activeChain.id)
       });
 
       logger.debug('fetchLastRebalanceEvent: Created public client for chain:', { chainName: activeChain.name });

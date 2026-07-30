@@ -36,11 +36,12 @@ import { PredictionPoolABI } from "@/utils/abi/PredictionPool";
 import { CoinABI } from "@/utils/abi/Coin";
 import { FatePoolFactories } from "@/utils/addresses";
 import { getChainConfig } from "@/utils/chainConfig";
+import { getTransport } from "@/utils/rpcTransport";
 import { getPriceFeedName } from "@/utils/supportedChainFeed";
 import { PredictionPoolFactoryABI } from "@/utils/abi/PredictionPoolFactory";
 import { ChainlinkOracleABI } from "@/utils/abi/ChainlinkOracle";
 import { ERC20ABI } from "@/utils/abi/ERC20";
-import { createPublicClient, http } from "viem";
+import { createPublicClient } from "viem";
 import { toast } from "sonner";
 
 // Helper function to get chain name
@@ -103,7 +104,7 @@ const checkUserHasBalance = async (
     }
     const publicClient = createPublicClient({
       chain: chainConfig.chain,
-      transport: http()
+      transport: getTransport(chainId)
     });
     // Quick parallel balance checks (cheap RPC calls)
     const [bullBalance, bearBalance] = await Promise.all([
@@ -485,7 +486,7 @@ const fetchUserTransactions = async (tokenAddress: string, userAddress: string, 
 
     const publicClient = createPublicClient({
       chain: chainConfig.chain,
-      transport: http()
+      transport: getTransport(chainId)
     });
 
     // Buy event ABI
@@ -1814,7 +1815,7 @@ const BalanceFilteredPoolLoader: React.FC<{
           try {
             const publicClient = createPublicClient({
               chain: getChainConfig(chainId)!.chain,
-              transport: http()
+              transport: getTransport(chainId)
             });
             // Get bull and bear token addresses
             const [bullToken, bearToken] = await Promise.all([
