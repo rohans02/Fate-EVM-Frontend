@@ -3,7 +3,7 @@
 
 "use client";
 
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useIndexedDB } from '@/hooks/useIndexedDB';
 import type {
   PoolDetails,
@@ -140,7 +140,7 @@ export const useFatePoolsStorage = (): UseFatePoolsStorageReturn => {
     };
   }, [indexedDB]);
 
-  return {
+  return useMemo(() => ({
     // Database state
     isInitialized: indexedDB.isInitialized,
     error: indexedDB.error,
@@ -185,5 +185,9 @@ export const useFatePoolsStorage = (): UseFatePoolsStorageReturn => {
     
     // Database info (with legacy format)
     getDatabaseInfo
-  };
+  }), [
+    indexedDB,
+    savePortfolioPosition, getPortfolioPositions, savePortfolioTransaction, getPortfolioTransactions,
+    savePortfolioCache, getPortfolioCache, clearPortfolioData, getDatabaseInfo
+  ]);
 };

@@ -1793,6 +1793,7 @@ const BalanceFilteredPoolLoader: React.FC<{
   const [filteredPools, setFilteredPools] = useState<string[]>([]);
   const [isFiltering, setIsFiltering] = useState(true);
   const [settledCount, setSettledCount] = useState(0);
+  const handleSettled = useCallback(() => setSettledCount((c) => c + 1), []);
 
   useEffect(() => {
     if (!isFiltering && filteredPools.length > 0 && settledCount === filteredPools.length) {
@@ -1801,6 +1802,7 @@ const BalanceFilteredPoolLoader: React.FC<{
   }, [settledCount, filteredPools.length, isFiltering, onAllSettled]);
   useEffect(() => {
     const filterPools = async () => {
+      setSettledCount(0);
       if (!userAddress || pools.length === 0) {
         setFilteredPools([]);
         setIsFiltering(false);
@@ -1887,7 +1889,7 @@ const BalanceFilteredPoolLoader: React.FC<{
           userAddress={userAddress}
           chainId={chainId}
           onDataLoad={onDataLoad}
-          onSettled={() => setSettledCount(c => c + 1)}
+          onSettled={handleSettled}
         />
       ))}
     </>

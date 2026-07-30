@@ -1,7 +1,7 @@
 // src/hooks/useIndexedDB.ts
 // React hook for IndexedDB operations with proper state management
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { toast } from 'sonner';
 import { FatePoolsIndexedDBManager } from '@/lib/indexeddb/manager';
 import { 
@@ -280,7 +280,7 @@ export const useIndexedDB = (): UseIndexedDBReturn => {
     return safeReadOperation(() => managerRef.current!.isHealthy(), false);
   }, [safeReadOperation]);
 
-  return {
+  return useMemo(() => ({
     // State
     isInitialized,
     isOnline,
@@ -326,5 +326,14 @@ export const useIndexedDB = (): UseIndexedDBReturn => {
     clearAllData,
     getDatabaseInfo,
     isHealthy
-  };
+  }), [
+    isInitialized, isOnline, error,
+    savePoolDetails, getPoolDetails, getAllPoolsForChain, getAllPools, getPoolsByCreator, batchSavePools,
+    saveTokenDetails, getTokenDetails, getTokensForPool, batchSaveTokens,
+    saveChainStatus, getChainStatus, getAllChainStatuses,
+    saveCache, getCache, deleteCache, cleanupExpiredCache,
+    savePortfolioPosition, getPortfolioPositions, savePortfolioTransaction, getPortfolioTransactions,
+    savePortfolioCache, getPortfolioCache, deletePortfolioCache, deletePortfolioPositions, deletePortfolioTransactions,
+    clearAllData, getDatabaseInfo, isHealthy
+  ]);
 };
