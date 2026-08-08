@@ -182,6 +182,7 @@ const PoolList: React.FC<PoolListProps> = ({
                     treasury: pool.treasuryFee,
                   }}
                   tvl={pool.tvl}
+                  volumeRecent={pool.volumeRecent}
                   baseDecimals={pool.baseDecimals}
                   baseSymbol={pool.baseSymbol}
                   chainName={pool.chainName}
