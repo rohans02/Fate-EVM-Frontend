@@ -1128,6 +1128,15 @@ export default function InteractionClient() {
         label: `rebalance:${poolId.slice(0, 10)}`
       });
 
+      // A partial scan can surface an older event, which would cache a stale rebalance.
+      if (scan.scanFailed) {
+        logger.warn('fetchLastRebalanceEvent: scan incomplete, keeping cached value', {
+          poolId,
+          requests: scan.requests
+        });
+        return;
+      }
+
       let foundEvent = false;
       const reachedEarliestBlock = scanFrom === BigInt(0) && scan.reachedEnd;
 
