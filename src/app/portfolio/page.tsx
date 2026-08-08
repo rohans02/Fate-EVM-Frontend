@@ -1435,7 +1435,7 @@ const EnhancedPoolDataLoader = ({
 
   // Wave 2: reads that depend on the token/oracle addresses resolved by wave 1.
   const hasWave2Inputs = !!(baseToken && bullTokenAddress && bearTokenAddress && userAddress);
-  const { data: poolDynamicData, fetchStatus: poolDynamicFetchStatus } = useReadContracts({
+  const { data: poolDynamicData, fetchStatus: poolDynamicFetchStatus, status: poolDynamicStatus } = useReadContracts({
     contracts: hasWave2Inputs ? [
       { address: bullTokenAddress, abi: CoinABI, functionName: 'name' },
       { address: bullTokenAddress, abi: CoinABI, functionName: 'symbol' },
@@ -1656,14 +1656,18 @@ const EnhancedPoolDataLoader = ({
     if (settledRef.current) return;
     if (!userAddress) return;
     if (poolStaticStatus === 'pending') return; // primary query hasn't settled yet
+    // An enabled wave-2 query also reads 'idle' on the render it is enabled, so counting
+    // that as terminal paints the empty state before positions arrive.
+    const wave2Terminal = !hasWave2Inputs || poolDynamicStatus !== 'pending';
     const allIdle =
       poolStaticFetchStatus === 'idle' &&
-      poolDynamicFetchStatus === 'idle';
+      poolDynamicFetchStatus === 'idle' &&
+      wave2Terminal;
     if (allIdle) {
       settledRef.current = true;
       onSettled?.();
     }
-  }, [poolStaticStatus, poolStaticFetchStatus, poolDynamicFetchStatus, userAddress, onSettled]);
+  }, [poolStaticStatus, poolStaticFetchStatus, poolDynamicFetchStatus, poolDynamicStatus, hasWave2Inputs, userAddress, onSettled]);
 
   return null;
 };
