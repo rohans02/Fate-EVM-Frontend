@@ -1471,7 +1471,12 @@ const EnhancedPoolDataLoader = ({
       const bearSymbol = poolDynamicData[5]?.result as string || 'BEAR';
       const bearSupply = Number(formatUnits(poolDynamicData[6]?.result as bigint || BigInt(0), 18));
 
-      const baseTokenDecimals = Number(poolDynamicData[10]?.result ?? 18);
+      // Defaulting to 18 on a failed read misprices every amount by 10^(18-d).
+      const rawDecimals = poolDynamicData[10]?.result;
+      const decimalsCallFailed = (poolDynamicData[10] as { status?: string } | undefined)?.status === 'failure';
+      if (rawDecimals === undefined && !decimalsCallFailed) return; // Still in flight
+      const baseTokenDecimals = rawDecimals !== undefined ? Number(rawDecimals) : 18;
+
       const bullReserve = Number(formatUnits((poolDynamicData[7]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
       const bearReserve = Number(formatUnits((poolDynamicData[8]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
       const rawSymbol = poolDynamicData[9]?.result as string | undefined;
@@ -1591,7 +1596,7 @@ const EnhancedPoolDataLoader = ({
         bullReturns: bullMetrics.returns,
         bearReturns: bearMetrics.returns,
         totalReturnPercentage: (bullMetrics.costBasis + bearMetrics.costBasis) > 0 ? ((bullMetrics.pnL + bearMetrics.pnL) / (bullMetrics.costBasis + bearMetrics.costBasis)) * 100 : 0,
-        costBasisUnavailable: bullMetrics.costBasisUnavailable || bearMetrics.costBasisUnavailable,
+        costBasisUnavailable: bullMetrics.costBasisUnavailable || bearMetrics.costBasisUnavailable || decimalsCallFailed,
         color: CHART_COLORS[index % CHART_COLORS.length],
         bullColor: BULL_COLORS[index % BULL_COLORS.length],
         bearColor: BEAR_COLORS[index % BEAR_COLORS.length],
