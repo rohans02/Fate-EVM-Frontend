@@ -123,6 +123,14 @@ export async function scanLogsChunked<TEvent extends AbiEvent>({
   if (fromBlock > toBlock) return empty;
 
   const effectiveChunkSize = chunkSize ?? getScanChunkSize(chainId);
+  if (effectiveChunkSize <= BigInt(0)) {
+    logger.error("scanLogsChunked: chunkSize must be positive", undefined, {
+      label: scanLabel,
+      chunkSize: effectiveChunkSize.toString(),
+    });
+    return { ...empty, scanFailed: true, reachedEnd: false };
+  }
+  const workers = Number.isInteger(concurrency) && concurrency > 0 ? concurrency : 1;
   let chunks = buildChunks(fromBlock, toBlock, effectiveChunkSize, direction);
   const truncated = maxChunks !== undefined && chunks.length > maxChunks;
   if (truncated) chunks = chunks.slice(0, maxChunks);
@@ -158,10 +166,9 @@ export async function scanLogsChunked<TEvent extends AbiEvent>({
           to: range.to.toString(),
           depth,
         });
-        const [left, right] = await Promise.all([
-          fetchChunk({ from: range.from, to: mid }, depth + 1),
-          fetchChunk({ from: mid + BigInt(1), to: range.to }, depth + 1),
-        ]);
+        // Sequential on purpose: a parallel split escapes the concurrency limit.
+        const left = await fetchChunk({ from: range.from, to: mid }, depth + 1);
+        const right = await fetchChunk({ from: mid + BigInt(1), to: range.to }, depth + 1);
         return {
           logs: [...left.logs, ...right.logs],
           ok: left.ok && right.ok,
@@ -200,7 +207,7 @@ export async function scanLogsChunked<TEvent extends AbiEvent>({
       }
     }
   } else {
-    const settled = await mapWithConcurrency(chunks, concurrency, (range) => fetchChunk(range));
+    const settled = await mapWithConcurrency(chunks, workers, (range) => fetchChunk(range));
     settled.forEach((outcome, i) => {
       outcomes[i] = outcome;
     });
