@@ -12,7 +12,7 @@ export default function PortfolioError({
   reset: () => void;
 }) {
   useEffect(() => {
-    logger.error("Portfolio route error:", error);
+    logger.error("Portfolio route error:", error, { digest: error.digest });
   }, [error]);
 
   return (
