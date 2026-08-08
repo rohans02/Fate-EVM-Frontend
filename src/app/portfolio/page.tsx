@@ -181,7 +181,7 @@ const calculateTokenMetricsWithEvents = async (
     }
     // 2. Fetch NEW transactions from blockchain (incremental)
     // Use buffer to avoid missing transactions at block boundaries (reorgs, timing issues)
-    const { transactions: newTransactions, scanFailed } = await fetchUserTransactions(
+    const { transactions: newTransactions, scanFailed, scannedThrough } = await fetchUserTransactions(
       tokenAddress,
       userAddress,
       chainId,
@@ -462,6 +462,17 @@ const calculateTokenMetricsWithEvents = async (
         } as PortfolioTransaction);
       }
       console.debug(`✅ Saved position and ${recentTxns.length} transactions to cache`);
+
+      // Only advance once trades are stored, and never past a dropped one: only the newest
+      // 30 are kept, and anything above the resume point is never scanned again.
+      if (scannedThrough !== null) {
+        const dropped = sortedTxns.length > recentTxns.length;
+        const oldestKept = recentTxns.length > 0 ? BigInt(recentTxns[0].blockNumber) : null;
+        const safeBlock = dropped && oldestKept !== null && oldestKept > BigInt(0)
+          ? oldestKept - BigInt(1)
+          : scannedThrough;
+        writeScanWatermark('trades', chainId, tokenAddress, safeBlock, userAddress);
+      }
     } catch (e) {
       console.error('Failed to save to cache:', e);
     }
@@ -534,7 +545,7 @@ const fetchUserTransactions = async (
     const chainConfig = getChainConfig(chainId);
     if (!chainConfig) {
       console.warn('No chain config found for chainId:', { chainId });
-      return { transactions: [], scanFailed: true };
+      return { transactions: [], scanFailed: true, scannedThrough: null };
     }
 
     const publicClient = createPublicClient({
@@ -554,7 +565,7 @@ const fetchUserTransactions = async (
       : floor;
 
     if (fromBlock > head) {
-      return { transactions: [], scanFailed: false };
+      return { transactions: [], scanFailed: false, scannedThrough: null };
     }
 
     // One pass with no address filter, then match in JS. Same call count, and filtering on the
@@ -570,10 +581,7 @@ const fetchUserTransactions = async (
     });
 
     scanFailed = scan.scanFailed;
-
-    if (scan.scannedSpan) {
-      writeScanWatermark('trades', chainId, tokenAddress, scan.scannedSpan.to, userAddress);
-    }
+    const scannedThrough = scan.scannedSpan?.to ?? null;
 
     const user = userAddress as Address;
     const matchesUser = (log: typeof scan.logs[number], field: 'to' | 'seller'): boolean => {
@@ -662,11 +670,11 @@ const fetchUserTransactions = async (
       transactionCount: transactions.length,
       baseTokenDecimals
     });
-    return { transactions, scanFailed };
+    return { transactions, scanFailed, scannedThrough };
 
   } catch (error) {
     console.error('Error fetching transactions:', error instanceof Error ? error : new Error(String(error)));
-    return { transactions: [], scanFailed: true };
+    return { transactions: [], scanFailed: true, scannedThrough: null };
   }
 };
 
