@@ -12,5 +12,11 @@ export const ChainlinkAdapterFactories: Record<number, Address> = {
 };
 
 export const HebeswapAdapterFactories: Record<number, Address> = {
-  61: "0x017cdc5ed9ba47a6a5c4414e8c66e7d7e967a83a", // Ethereum Classic 
+  61: "0x017cdc5ed9ba47a6a5c4414e8c66e7d7e967a83a", // Ethereum Classic
+};
+
+// No pool can exist before its factory, so scans start here instead of guessing. ETC is
+// missing because its RPCs cannot read old state; those chains fall back to a block window.
+export const FactoryDeploymentBlocks: Record<number, bigint> = {
+  11155111: BigInt(9_398_378),
 };
