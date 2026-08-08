@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useAccount, useReadContracts } from "wagmi";
-import { formatUnits, Address, isAddress } from "viem";
+import { formatUnits, Address, isAddress, isAddressEqual } from "viem";
 import { useRouter } from "next/navigation";
 import { useFatePoolsStorage } from "@/lib/fatePoolHook";
 import { PortfolioPosition, PortfolioTransaction, SupportedChainId, PortfolioCache } from "@/lib/indexeddb/config";
@@ -34,9 +34,12 @@ import { UseFatePoolsStorageReturn } from "@/lib/fatePoolHook";
 import { FatePoolsIndexedDBManager } from "@/lib/indexeddb/manager";
 import { PredictionPoolABI } from "@/utils/abi/PredictionPool";
 import { CoinABI } from "@/utils/abi/Coin";
-import { FatePoolFactories } from "@/utils/addresses";
+import { FatePoolFactories, FactoryDeploymentBlocks } from "@/utils/addresses";
 import { getChainConfig } from "@/utils/chainConfig";
-import { getTransport } from "@/utils/rpcTransport";
+import { getTransport, getScanTransport } from "@/utils/rpcTransport";
+import { scanLogsChunked, getAbiEvent } from "@/lib/scanLogs";
+import { readScanWatermark, writeScanWatermark } from "@/lib/scanWatermark";
+import { logger } from "@/lib/logger";
 import { getPriceFeedName } from "@/utils/supportedChainFeed";
 import { PredictionPoolFactoryABI } from "@/utils/abi/PredictionPoolFactory";
 import { ChainlinkOracleABI } from "@/utils/abi/ChainlinkOracle";
@@ -145,7 +148,9 @@ const calculateTokenMetricsWithEvents = async (
   poolAddress: string,
   type: 'bull' | 'bear',
   baseTokenSymbol: string,
-  storage: UseFatePoolsStorageReturn
+  storage: UseFatePoolsStorageReturn,
+  baseTokenDecimals: number,
+  head: bigint
 ) => {
   const currentPrice = safeNumber(supply > 0 ? reserve / supply : 0);
   const currentValue = userTokens * currentPrice;
@@ -176,8 +181,14 @@ const calculateTokenMetricsWithEvents = async (
     }
     // 2. Fetch NEW transactions from blockchain (incremental)
     // Use buffer to avoid missing transactions at block boundaries (reorgs, timing issues)
-    const fetchFromBlock = minBlock > 100 ? minBlock - 100 : 0;
-    const { transactions: newTransactions, scanFailed } = await fetchUserTransactions(tokenAddress, userAddress, chainId, fetchFromBlock);
+    const { transactions: newTransactions, scanFailed } = await fetchUserTransactions(
+      tokenAddress,
+      userAddress,
+      chainId,
+      minBlock,
+      baseTokenDecimals,
+      head
+    );
 
     // 3. Merge and deduplicate using stable IDs
     // Generate deterministic ID for transactions (handles missing transactionHash)
@@ -483,8 +494,34 @@ const calculateTokenMetricsWithEvents = async (
   }
 };
 
+const COIN_TRADE_EVENTS = [
+  getAbiEvent(CoinABI, 'Buy'),
+  getAbiEvent(CoinABI, 'Sell'),
+];
+
+const REORG_BUFFER = BigInt(100);
+
+const FALLBACK_LOOKBACK: Record<number, bigint> = {
+  11155111: BigInt(100_000),
+  61: BigInt(50_000),
+};
+
+const resolveScanFloor = (chainId: number, head: bigint): bigint => {
+  const deployment = FactoryDeploymentBlocks[chainId];
+  if (deployment !== undefined) return deployment;
+  const lookback = FALLBACK_LOOKBACK[chainId] ?? BigInt(50_000);
+  return head > lookback ? head - lookback : BigInt(0);
+};
+
 // Fetch user transactions from blockchain events
-const fetchUserTransactions = async (tokenAddress: string, userAddress: string, chainId: number, minBlock: number = 0) => {
+const fetchUserTransactions = async (
+  tokenAddress: string,
+  userAddress: string,
+  chainId: number,
+  minBlock: number,
+  baseTokenDecimals: number,
+  head: bigint
+) => {
   // Set when a read fails, so the caller can tell "no history" from "couldn't read history".
   let scanFailed = false;
   try {
@@ -502,108 +539,63 @@ const fetchUserTransactions = async (tokenAddress: string, userAddress: string, 
 
     const publicClient = createPublicClient({
       chain: chainConfig.chain,
-      transport: getTransport(chainId)
+      transport: getScanTransport(chainId)
     });
 
-    // Buy event ABI
-    const buyEventABI = {
-      type: 'event',
-      name: 'Buy',
-      inputs: [
-        { name: 'buyer', type: 'address', indexed: true, internalType: 'address' },
-        { name: 'to', type: 'address', indexed: true, internalType: 'address' },
-        { name: 'amountAsset', type: 'uint256', indexed: false, internalType: 'uint256' },
-        { name: 'amountCoin', type: 'uint256', indexed: false, internalType: 'uint256' },
-        { name: 'feePaid', type: 'uint256', indexed: false, internalType: 'uint256' },
-      ]
-    } as const;
+    const watermark = readScanWatermark('trades', chainId, tokenAddress, userAddress);
+    const cachedThrough = minBlock > 0 ? BigInt(minBlock) : null;
+    const resumeFrom = [watermark, cachedThrough]
+      .filter((b): b is bigint => b !== null)
+      .reduce<bigint | null>((max, b) => (max === null || b > max ? b : max), null);
 
-    // Sell event ABI
-    const sellEventABI = {
-      type: 'event',
-      name: 'Sell',
-      inputs: [
-        { name: 'seller', type: 'address', indexed: true, internalType: 'address' },
-        { name: 'amountAsset', type: 'uint256', indexed: false, internalType: 'uint256' },
-        { name: 'amountCoin', type: 'uint256', indexed: false, internalType: 'uint256' },
-        { name: 'feePaid', type: 'uint256', indexed: false, internalType: 'uint256' },
-      ]
-    } as const;
+    const floor = resolveScanFloor(chainId, head);
+    const fromBlock = resumeFrom !== null
+      ? (resumeFrom > REORG_BUFFER ? resumeFrom - REORG_BUFFER : BigInt(0))
+      : floor;
 
-    console.debug('Fetching buy and sell events...');
+    if (fromBlock > head) {
+      return { transactions: [], scanFailed: false };
+    }
 
-    // Helper function to fetch logs in chunks to avoid RPC limits
-    const fetchLogsInChunks = async (eventABI: any, args: any) => {
-      const currentBlock = await publicClient.getBlockNumber();
-      const chunkSize = BigInt(5000);
-      const allLogs: any[] = [];
-      const lookback = chainId === 11155111 ? BigInt(100000) : BigInt(50000);
+    // One pass with no address filter, then match in JS. Same call count, and filtering on the
+    // node would need hand-built topics because the user field is named differently per event.
+    const scan = await scanLogsChunked({
+      client: publicClient,
+      chainId,
+      address: tokenAddress as Address,
+      event: COIN_TRADE_EVENTS,
+      fromBlock,
+      toBlock: head,
+      label: `trades:${tokenAddress.slice(0, 10)}`,
+    });
 
-      // Use minBlock for incremental fetching
-      let startBlock: bigint;
-      if (minBlock > 0) {
-        startBlock = BigInt(minBlock) + BigInt(1);  // Start from next block after cached
-      } else {
-        startBlock = currentBlock > lookback ? currentBlock - lookback : BigInt(0);
-      }
+    scanFailed = scan.scanFailed;
 
-      // If startBlock is beyond currentBlock, no new transactions
-      if (startBlock > currentBlock) {
-        return [];
-      }
+    if (scan.scannedSpan) {
+      writeScanWatermark('trades', chainId, tokenAddress, scan.scannedSpan.to, userAddress);
+    }
 
-      console.debug(`Scanning from block ${startBlock} to ${currentBlock} (${currentBlock - startBlock} blocks)`, {
-        startBlock,
-        currentBlock,
-        blockRange: currentBlock - startBlock
-      });
-
-      for (let fromBlock = startBlock; fromBlock <= currentBlock; fromBlock += chunkSize) {
-        const toBlock = fromBlock + chunkSize - BigInt(1) > currentBlock
-          ? currentBlock
-          : fromBlock + chunkSize - BigInt(1);
-
-        try {
-          const logs = await publicClient.getLogs({
-            address: tokenAddress as Address,
-            event: eventABI,
-            args,
-            fromBlock,
-            toBlock
-          });
-
-          allLogs.push(...logs);
-          if (logs.length > 0) {
-            console.debug(`Fetched ${logs.length} logs from block ${fromBlock} to ${toBlock}`, {
-              logCount: logs.length,
-              fromBlock,
-              toBlock
-            });
-          }
-        } catch (error: any) {
-          console.warn(`Failed to fetch logs from block ${fromBlock} to ${toBlock}`, {
-            fromBlock,
-            toBlock,
-            error: error?.shortMessage || error?.message
-          });
-
-          // No retry: re-splitting a rate-limited range multiplies requests and makes it worse.
-          scanFailed = true;
-        }
-      }
-
-      return allLogs;
+    const user = userAddress as Address;
+    const matchesUser = (log: typeof scan.logs[number], field: 'to' | 'seller'): boolean => {
+      const candidate = (log.args as Record<string, unknown> | undefined)?.[field];
+      return typeof candidate === 'string'
+        && isAddress(candidate)
+        && isAddressEqual(candidate as Address, user);
     };
 
-    // Fetch buy and sell events in parallel with chunking
-    const [buyLogs, sellLogs] = await Promise.all([
-      fetchLogsInChunks(buyEventABI, { buyer: userAddress as Address }),
-      fetchLogsInChunks(sellEventABI, { seller: userAddress as Address })
-    ]);
+    // Matched on `to`, not `buyer`: you can buy for someone else, and the cost belongs to
+    // whoever ends up holding the coins.
+    const buyLogs = scan.logs.filter((log) => log.eventName === 'Buy' && matchesUser(log, 'to'));
+    const sellLogs = scan.logs.filter((log) => log.eventName === 'Sell' && matchesUser(log, 'seller'));
 
-    console.debug(`Found ${buyLogs.length} buy events and ${sellLogs.length} sell events`, {
-      buyEvents: buyLogs.length,
-      sellEvents: sellLogs.length
+    logger.debug('fetchUserTransactions: scan complete', {
+      token: tokenAddress,
+      fromBlock: fromBlock.toString(),
+      toBlock: head.toString(),
+      requests: scan.requests,
+      matchedBuys: buyLogs.length,
+      matchedSells: sellLogs.length,
+      scanFailed
     });
 
     // Batch fetch block timestamps for accuracy
@@ -643,56 +635,32 @@ const fetchUserTransactions = async (tokenAddress: string, userAddress: string, 
       timestamp?: number;
     }> = [];
 
-    // Process buy events
-    for (const log of buyLogs) {
-      const amountAsset = Number(formatUnits(log.args.amountAsset!, 18));
-      const amountCoin = Number(formatUnits(log.args.amountCoin!, 18));
-      const price = amountCoin > 0 ? amountAsset / amountCoin : 0;
+    // amountAsset and feePaid use the base token's decimals; only amountCoin is always 18.
+    const toTransaction = (log: typeof buyLogs[number], type: 'buy' | 'sell') => {
+      const args = log.args as { amountAsset?: bigint; amountCoin?: bigint; feePaid?: bigint };
+      const amountAsset = Number(formatUnits(args.amountAsset ?? BigInt(0), baseTokenDecimals));
+      const amountCoin = Number(formatUnits(args.amountCoin ?? BigInt(0), 18));
 
-      console.debug(`BUY: ${amountCoin} tokens for ${amountAsset} WETH (price: ${price})`, {
-        amountCoin,
-        amountAsset,
-        price
-      });
-
-      transactions.push({
-        type: 'buy',
+      return {
+        type,
         blockNumber: log.blockNumber,
         amountAsset,
         amountCoin,
-        price,
-        transactionHash: log.transactionHash,
-        feePaid: Number(formatUnits(log.args.feePaid || BigInt(0), 18)),
+        price: amountCoin > 0 ? amountAsset / amountCoin : 0,
+        transactionHash: log.transactionHash ?? undefined,
+        feePaid: Number(formatUnits(args.feePaid ?? BigInt(0), baseTokenDecimals)),
         timestamp: blockTimestamps.get(log.blockNumber) || Date.now()
-      });
-    }
+      };
+    };
 
-    // Process sell events
-    for (const log of sellLogs) {
-      const amountAsset = Number(formatUnits(log.args.amountAsset!, 18));
-      const amountCoin = Number(formatUnits(log.args.amountCoin!, 18));
-      const price = amountCoin > 0 ? amountAsset / amountCoin : 0;
+    transactions.push(
+      ...buyLogs.map((log) => toTransaction(log, 'buy')),
+      ...sellLogs.map((log) => toTransaction(log, 'sell'))
+    );
 
-      console.debug(`SELL: ${amountCoin} tokens for ${amountAsset} WETH (price: ${price})`, {
-        amountCoin,
-        amountAsset,
-        price
-      });
-
-      transactions.push({
-        type: 'sell',
-        blockNumber: log.blockNumber,
-        amountAsset,
-        amountCoin,
-        price,
-        transactionHash: log.transactionHash,
-        feePaid: Number(formatUnits(log.args.feePaid || BigInt(0), 18)),
-        timestamp: blockTimestamps.get(log.blockNumber) || Date.now()
-      });
-    }
-
-    console.debug(`Total transactions processed: ${transactions.length}`, {
-      transactionCount: transactions.length
+    logger.debug('fetchUserTransactions: processed transactions', {
+      transactionCount: transactions.length,
+      baseTokenDecimals
     });
     return { transactions, scanFailed };
 
@@ -1542,6 +1510,13 @@ const EnhancedPoolDataLoader = ({
       let bullMetrics, bearMetrics;
 
       try {
+        const scanChainConfig = getChainConfig(chainId);
+        if (!scanChainConfig) throw new Error(`No chain config for chainId ${chainId}`);
+        const head = await createPublicClient({
+          chain: scanChainConfig.chain,
+          transport: getScanTransport(chainId)
+        }).getBlockNumber();
+
         // Always calculate metrics if user has transaction history, even if current balance is 0
         bullMetrics = await calculateTokenMetricsWithEvents(
           bullReserve,
@@ -1553,7 +1528,9 @@ const EnhancedPoolDataLoader = ({
           poolAddress,
           'bull',
           baseTokenSymbol,
-          storage
+          storage,
+          baseTokenDecimals,
+          head
         );
 
         bearMetrics = await calculateTokenMetricsWithEvents(
@@ -1566,7 +1543,9 @@ const EnhancedPoolDataLoader = ({
           poolAddress,
           'bear',
           baseTokenSymbol,
-          storage
+          storage,
+          baseTokenDecimals,
+          head
         );
       } catch (error) {
         console.error('Error calculating metrics with events, using fallback:', error instanceof Error ? error : new Error(String(error)));
