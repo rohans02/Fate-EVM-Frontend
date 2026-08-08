@@ -35,7 +35,8 @@ import { useTheme } from "next-themes";
 import { Info } from 'lucide-react';
 import { logger } from "@/lib/logger";
 import { getChainConfig } from "@/utils/chainConfig";
-import { getTransport } from "@/utils/rpcTransport";
+import { getScanTransport, getScanChunkSize } from "@/utils/rpcTransport";
+import { scanLogsChunked, getAbiEvent } from "@/lib/scanLogs";
 
 
 
@@ -969,28 +970,15 @@ export default function InteractionClient() {
       setIsFetchingRebalanceEvents(true);
       const publicClient = createPublicClient({
         chain: activeChain,
-        transport: getTransport(activeChain.id)
+        transport: getScanTransport(activeChain.id)
       });
 
       logger.debug('fetchLastRebalanceEvent: Created public client for chain:', { chainName: activeChain.name });
 
-      const rebalancedEventABI = {
-        type: 'event',
-        name: 'Rebalanced',
-        inputs: [
-          { name: 'caller', type: 'address', indexed: true, internalType: 'address' },
-          { name: 'blockNumber', type: 'uint256', indexed: true, internalType: 'uint256' },
-          { name: 'oldPrice', type: 'uint256', indexed: false, internalType: 'uint256' },
-          { name: 'newPrice', type: 'uint256', indexed: false, internalType: 'uint256' },
-          { name: 'priceChangePercent', type: 'uint256', indexed: false, internalType: 'uint256' },
-          { name: 'bullReservesBefore', type: 'uint256', indexed: false, internalType: 'uint256' },
-          { name: 'bearReservesBefore', type: 'uint256', indexed: false, internalType: 'uint256' },
-          { name: 'bullReservesAfter', type: 'uint256', indexed: false, internalType: 'uint256' },
-          { name: 'bearReservesAfter', type: 'uint256', indexed: false, internalType: 'uint256' }
-        ]
-      } as const;
+      // The old inline copy had 9 params instead of 12, so it never matched a real log.
+      const rebalancedEventABI = getAbiEvent(PredictionPoolABI, 'Rebalanced');
 
-      const CHUNK_SIZE = BigInt(9000);
+      const CHUNK_SIZE = getScanChunkSize(activeChain.id);
       const MAX_PAGES = 10;
 
       const cachedBlockStr = localStorage.getItem(`lastRebalanceBlock_${poolId}`);
@@ -1117,71 +1105,55 @@ export default function InteractionClient() {
         }
       }
 
-      // Full backward scan: 10 pages × 9,000 blocks ≈ 12–13 days
+      const scanDepth = CHUNK_SIZE * BigInt(MAX_PAGES);
+      const scanFrom = latestBlock > scanDepth ? latestBlock - scanDepth + BigInt(1) : BigInt(0);
+
       logger.debug('fetchLastRebalanceEvent: Starting reverse-paginated scan', {
         latestBlock: latestBlock.toString(),
         chunkSize: CHUNK_SIZE.toString(),
         maxPages: MAX_PAGES
       });
 
+      const scan = await scanLogsChunked({
+        client: publicClient,
+        chainId: activeChain.id,
+        address: poolId as Address,
+        event: rebalancedEventABI,
+        fromBlock: scanFrom,
+        toBlock: latestBlock,
+        chunkSize: CHUNK_SIZE,
+        direction: 'backward',
+        stopOnFirstMatch: true,
+        maxChunks: MAX_PAGES,
+        label: `rebalance:${poolId.slice(0, 10)}`
+      });
+
       let foundEvent = false;
-      let reachedEarliestBlock = false;
-      let scanTimestampResolver: ((b: bigint) => Date) | null = null;
+      const reachedEarliestBlock = scanFrom === BigInt(0) && scan.reachedEnd;
 
-      for (let page = 0; page < MAX_PAGES; page++) {
-        const toBlock   = latestBlock - BigInt(page) * CHUNK_SIZE;
-        if (toBlock < BigInt(0)) break;
-        const fromBlock = toBlock >= CHUNK_SIZE ? toBlock - CHUNK_SIZE + BigInt(1) : BigInt(0);
+      if (scan.logs.length > 0) {
+        const latestEvent = scan.logs[scan.logs.length - 1];
 
+        const boundaryNumber = scan.scannedSpan?.from ?? scanFrom;
+        let boundary = { number: boundaryNumber, timestamp: sharedLatestBlock.timestamp };
         try {
-          let logs;
-          if (page === 0) {
-            // Fetch boundary block in parallel on first page to calibrate block time
-            const [fromBlockData, page0Logs] = await Promise.all([
-              publicClient.getBlock({ blockNumber: fromBlock }),
-              publicClient.getLogs({ address: poolId as Address, event: rebalancedEventABI, fromBlock, toBlock }),
-            ]);
-            scanTimestampResolver = makeTimestampResolver(sharedLatestBlock, fromBlockData);
-            logs = page0Logs;
-          } else {
-            logs = await publicClient.getLogs({
-              address: poolId as Address,
-              event: rebalancedEventABI,
-              fromBlock,
-              toBlock
-            });
-          }
-
-          if (logs.length > 0) {
-            const latestEvent = logs[logs.length - 1];
-            const resolveTs = scanTimestampResolver
-              ?? makeTimestampResolver(sharedLatestBlock, { number: fromBlock, timestamp: sharedLatestBlock.timestamp });
-            const rebalanceTime = resolveTs(latestEvent.blockNumber!);
-            setLastRebalanceTime(rebalanceTime);
-            setRebalanceOutOfRange(false);
-            localStorage.setItem(`lastRebalance_${poolId}`, rebalanceTime.toISOString());
-            localStorage.setItem(`lastRebalanceBlock_${poolId}`, latestEvent.blockNumber!.toString());
-
-            logger.debug('fetchLastRebalanceEvent: Found last Rebalanced event', {
-              blockNumber: latestEvent.blockNumber?.toString(),
-              rebalanceTime: rebalanceTime.toLocaleString(),
-              page: page + 1
-            });
-            foundEvent = true;
-            break;
-          }
-        } catch (pageError) {
-          logger.warn(`fetchLastRebalanceEvent: Scan page ${page + 1} failed`, {
-            fromBlock: fromBlock.toString(),
-            toBlock: toBlock.toString(),
-            message: (pageError as Error)?.message
-          });
+          const boundaryBlock = await publicClient.getBlock({ blockNumber: boundaryNumber });
+          boundary = { number: boundaryBlock.number, timestamp: boundaryBlock.timestamp };
+        } catch {
         }
 
-        if (fromBlock === BigInt(0)) {
-          reachedEarliestBlock = true;
-          break;
-        }
+        const rebalanceTime = makeTimestampResolver(sharedLatestBlock, boundary)(latestEvent.blockNumber!);
+        setLastRebalanceTime(rebalanceTime);
+        setRebalanceOutOfRange(false);
+        localStorage.setItem(`lastRebalance_${poolId}`, rebalanceTime.toISOString());
+        localStorage.setItem(`lastRebalanceBlock_${poolId}`, latestEvent.blockNumber!.toString());
+
+        logger.debug('fetchLastRebalanceEvent: Found last Rebalanced event', {
+          blockNumber: latestEvent.blockNumber?.toString(),
+          rebalanceTime: rebalanceTime.toLocaleString(),
+          requests: scan.requests
+        });
+        foundEvent = true;
       }
 
       if (!foundEvent) {
