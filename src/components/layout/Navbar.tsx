@@ -3,8 +3,7 @@
 import Link from "next/link";
 import React, { useState, useEffect } from "react";
 import Image from "next/image";
-import logoBlack from "../../../public/logo-dark.png";
-import logoWhite from "../../../public/logo-white.png";
+import logo from "../../../public/logo.svg";
 import { useTheme } from "next-themes";
 import { ModeToggle } from "../darkModeToggle";
 import WalletButton from "../ui/walletButton";
@@ -44,11 +43,11 @@ const Navbar: React.FC<NavbarProps> = ({ className = "" }) => {
             <Link href="/">
               <div className="text-center">
                 <Image
-                  src={resolvedTheme === "dark" ? logoWhite : logoBlack}
+                  src={logo}
                   alt="Fate Protocol"
                   width={80}
-                  height={80}
-                  className="p-2 brightness-75 contrast-125 dark:brightness-100 dark:contrast-100"
+                  height={83}
+                  className="p-2"
                   priority
                 />
               </div>
