@@ -32,9 +32,16 @@ export artifacts.
   not generated from the contracts repo. If a contract's external surface
   changes, edit the const by hand, then `src/utils/addresses.ts` after a
   redeploy.
-- **Adding or enabling a chain touches five files** and changing only one fails
-  silently: `src/utils/wagmiConfig.ts`, `src/utils/chainConfig.ts`,
-  `src/utils/addresses.ts`, `src/utils/chains/*.ts`, `src/data/tokens/*.json`.
+- **Adding or enabling a chain touches eight places.** Missing one usually fails
+  silently; `explorer.ts` is the exception and throws on an unknown chain id.
+  - `src/utils/wagmiConfig.ts` — `chains` and `transports`
+  - `src/utils/chains/*.ts` — a viem `Chain` definition, for non-standard chains
+  - `src/utils/chainConfig.ts` — `getChainConfig(chainId)`
+  - `src/utils/rpcTransport.ts` — `DEFAULT_RPC_URLS`
+  - `src/utils/supportedChainFeed.ts` — `CHAIN_PRICE_FEED_OPTIONS`; `SUPPORTED_CHAINS` derives from it
+  - `src/utils/explorer.ts` — explorer base URLs
+  - `src/utils/addresses.ts` — deployed factory addresses
+  - `src/data/tokens/*.json` plus its static import and mapping in `src/utils/tokenList.ts`
 - **Three numeric scales are in play and must not be conflated.** Base-token
   amounts use the token's own decimals, read on-chain, never assume 18. Oracle
   prices and sentiment ratios are WAD (1e18). Contract fees use

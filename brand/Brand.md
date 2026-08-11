@@ -1,8 +1,12 @@
 # Fate Protocol Brand Kit
 
-This folder is the canonical source for Fate Protocol's visual identity: logo, favicons and icons,
-colour palette, and typography. The assets referenced below live in this `brand/` folder; the copies
-under `public/` are what the deployed application serves, and the two are kept identical.
+This folder is the canonical source for **Fate Protocol's own** visual identity: logo, favicons and
+icons, colour palette, and typography. Those assets live here, and the copies under `public/` are
+what the deployed application serves; the two are kept identical.
+
+The Stability Nexus organisation logo is **not** a Fate asset and is deliberately not duplicated
+here. It is referenced from `public/` where the application uses it, and the organisation owns the
+canonical copy.
 
 ## Logo
 

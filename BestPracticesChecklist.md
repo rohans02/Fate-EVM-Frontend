@@ -2,7 +2,7 @@
 
 > Criteria adapted from the [OpenSSF Best Practices Badge](https://github.com/coreinfrastructure/best-practices-badge)
 > (MIT / CC BY 3.0) by OpenSSF contributors. Modified for AOSSIE multi-repo template use.
-
+>
 > **Purpose:** Covers OpenSSF Best Practices criteria that are NOT auto-detected by OpenSSF Scorecard.
 > Scorecard already handles: License, SAST tools, CI tests, Security Policy file, Branch Protection,
 > Pinned Dependencies, Signed Releases, Maintained status, and Known Vulnerabilities.
@@ -28,17 +28,16 @@ projects score the same checklist, so the figures are comparable across reposito
 |--------------------|-----|----------|-------|--------|
 | Basics             | 8   | 8        | 100%  | 🟢     |
 | Change Control     | 3   | 6        | 50%   | 🟡     |
-| Reporting          | 6   | 8        | 75%   | 🟡     |
+| Reporting          | 7   | 8        | 88%   | 🟢     |
 | Quality            | 4   | 11       | 36%   | 🔴     |
 | Security           | 9   | 9        | 100%  | 🟢     |
 | Analysis           | 3   | 7        | 43%   | 🔴     |
-| **Total**          | **33** | **49** | **67%** | 🟡 |
+| **Total**          | **34** | **49** | **69%** | 🟡 |
 
-Raw breakdown, for transparency: **21 satisfied `[x]`, 12 justified N/A `[~]`, 16 unmet `[ ]`.**
+Raw breakdown, for transparency: **21 satisfied `[x]`, 13 justified N/A `[~]`, 15 unmet `[ ]`.**
 
-**Unmet 🔴 MUST items:** `version_unique`, `vulnerability_report_process`, `test_policy`,
-`tests_are_added`, `warnings_fixed`.
-**Unmet 🟡 SHOULD items:** `vulnerability_report_private`.
+**Unmet 🔴 MUST items:** `version_unique`, `test_policy`, `tests_are_added`, `warnings_fixed`.
+**Unmet 🟡 SHOULD items:** `enhancement_responses`.
 
 ---
 
@@ -113,21 +112,21 @@ Raw breakdown, for transparency: **21 satisfied `[x]`, 12 justified N/A `[~]`, 1
   - *Evidence URL:* [GitHub Issues](https://github.com/StabilityNexus/Fate-EVM-Frontend/issues) — 34 issues in the last 12 months.
 
 - [x] 🔴 **report_responses** — A majority of bug reports submitted in the last 2–12 months have been acknowledged.
-  - *Self-certification note:* Of 34 issues opened in the last 12 months, 24 have been closed and 12 carry maintainer comments, so a clear majority received a response. 5 open issues currently have no reply.
+  - *Self-certification note:* Measured over the 34 issues opened in the last 12 months. An issue counts as acknowledged if it carries a reply from someone other than its author, or was closed by a maintainer. **Of the 8 issues labelled `bug`, 7 were acknowledged (88%).** Across all 34 issues the figure is 19 (56%), of which 7 were replies and 12 were maintainer closures.
 
-- [x] 🟡 **enhancement_responses** — More than 50% of enhancement requests in the last 2–12 months have received a response.
-  - *Self-certification note:* Same issue set; enhancement requests are triaged and closed alongside bug reports.
+- [ ] 🟡 **enhancement_responses** — More than 50% of enhancement requests in the last 2–12 months have received a response.
+  - *Note:* Unmet, measured rather than assumed. Of the 7 issues labelled `enhancement` in the last 12 months, 3 were acknowledged (43%), below the 50% bar. Triage of enhancement requests needs to improve before this can be claimed.
 
 - [x] 🔴 **report_archive** — Reports and responses are publicly archived and searchable.
   - *Evidence URL:* [GitHub Issues](https://github.com/StabilityNexus/Fate-EVM-Frontend/issues) — public repository, full history readable without an account.
 
 ### Vulnerability Reporting
 
-- [ ] 🔴 **vulnerability_report_process** — A vulnerability reporting process is documented (e.g., `SECURITY.md`).
-  - *Note:* Unmet. No `SECURITY.md` exists in this repository, and none exists at the `StabilityNexus` organisation level either.
+- [x] 🔴 **vulnerability_report_process** — A vulnerability reporting process is documented (e.g., `SECURITY.md`).
+  - *Evidence URL:* [SECURITY.md](SECURITY.md) — private reporting route, what to include, 14-day acknowledgement target, and scope.
 
-- [ ] 🟡 **vulnerability_report_private** — If private vulnerability reporting is supported, the method for private submission is documented.
-  - *Note:* Unmet, and dependent on `vulnerability_report_process`. To be documented in `SECURITY.md`.
+- [~] 🟡 **vulnerability_report_private** — If private vulnerability reporting is supported, the method for private submission is documented.
+  - *Justification:* N/A. The criterion is conditional on private reporting being supported. GitHub's built-in private vulnerability reporting is disabled on this repository, and enabling it requires admin access. [SECURITY.md](SECURITY.md) nevertheless documents a private contact route via direct message to a listed maintainer. This becomes applicable if the setting is enabled.
 
 - [~] 🔴 **vulnerability_report_response** — Initial response to any vulnerability report received in the last 6 months was within 14 days.
   - *Justification:* N/A. No vulnerability reports have been received.

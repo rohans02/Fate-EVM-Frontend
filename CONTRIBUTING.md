@@ -19,7 +19,8 @@ Questions, ideas, or help with a first contribution:
    git remote add upstream https://github.com/StabilityNexus/Fate-EVM-Frontend.git
    ```
 
-2. **Install dependencies** (Node.js 18 or later):
+2. **Install dependencies** (Node.js 18.18 or later; 20 LTS recommended, matching
+   Next.js 15's `^18.18.0 || ^19.8.0 || >= 20.0.0`):
 
    ```bash
    npm install
