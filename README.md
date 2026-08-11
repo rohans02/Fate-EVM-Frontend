@@ -4,7 +4,7 @@
 <!-- Organization Logo -->
 <div align="center" style="display: flex; align-items: center; justify-content: center; gap: 16px;">
   <img alt="Stability Nexus" src="public/Animated/logo-animated.gif" width="175">
-  
+  <img alt="Fate Protocol" src="public/logo.svg" width="150">
 </div>
 
 &nbsp;
@@ -12,9 +12,7 @@
 <!-- Organization Name -->
 <div align="center">
 
-[![Static Badge](https://img.shields.io/badge/Stability_Nexus-FateProtocol-228B22?style=for-the-badge&labelColor=FFC517)](https://stability.nexus/protocols)
-
-<!-- Correct deployed url to be added -->
+[![Static Badge](https://img.shields.io/badge/Stability_Nexus-FateProtocol-228B22?style=for-the-badge&labelColor=FFC517)](https://fate.stability.nexus/)
 
 </div>
 
