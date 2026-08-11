@@ -237,20 +237,12 @@ npm run start
 
 ## Contributing
 
-We welcome contributions of all kinds! To contribute:
+We welcome contributions of all kinds. See **[CONTRIBUTING.md](CONTRIBUTING.md)**
+for development setup, coding style, and the pull request process.
 
-1. Fork the repository and create your feature branch (`git checkout -b feature/AmazingFeature`).
-2. Commit your changes (`git commit -m 'Add some AmazingFeature'`).
-3. Run the development workflow commands to ensure code quality:
-   - `npm run lint`
-4. Push your branch (`git push origin feature/AmazingFeature`).
-5. Open a Pull Request for review.
-
-If you encounter bugs, need help, or have feature requests:
-
-- Please open an issue in this repository providing detailed information.
-- Describe the problem clearly and include any relevant logs or screenshots.
-
-We appreciate your feedback and contributions!
+Questions and ideas are welcome in our
+[Discord channel](https://discord.com/channels/995968619034984528/1324064370883301386).
+If you hit a bug, please open an issue with clear steps to reproduce and any
+relevant logs or screenshots.
 
 © 2025 The Stable Order.
