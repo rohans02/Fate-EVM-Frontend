@@ -1,0 +1,266 @@
+# AOSSIE Best Practices Checklist
+
+> Criteria adapted from the [OpenSSF Best Practices Badge](https://github.com/coreinfrastructure/best-practices-badge)
+> (MIT / CC BY 3.0) by OpenSSF contributors. Modified for AOSSIE multi-repo template use.
+
+> **Purpose:** Covers OpenSSF Best Practices criteria that are NOT auto-detected by OpenSSF Scorecard.
+> Scorecard already handles: License, SAST tools, CI tests, Security Policy file, Branch Protection,
+> Pinned Dependencies, Signed Releases, Maintained status, and Known Vulnerabilities.
+>
+> **Legend:**
+> - 🔴 MUST — Required for passing
+> - 🟡 SHOULD — Required unless documented rationale given
+> - 🔵 SUGGESTED — Optional but recommended
+> - ⚪ N/A — Marked `[~]` with justification
+
+**Scope:** `StabilityNexus/Fate-EVM-Frontend`, the EVM frontend for Fate Protocol.
+Last reviewed: 2026-08-11.
+
+---
+
+## Score Summary
+
+A criterion that does not apply cannot be failed, so **Met counts both `[x]` satisfied and `[~]`
+justified N/A items**, over the full total of 49. This matches how other AOSSIE and Stability Nexus
+projects score the same checklist, so the figures are comparable across repositories.
+
+| Category           | Met | of Total | Score | Status |
+|--------------------|-----|----------|-------|--------|
+| Basics             | 8   | 8        | 100%  | 🟢     |
+| Change Control     | 3   | 6        | 50%   | 🟡     |
+| Reporting          | 6   | 8        | 75%   | 🟡     |
+| Quality            | 4   | 11       | 36%   | 🔴     |
+| Security           | 9   | 9        | 100%  | 🟢     |
+| Analysis           | 3   | 7        | 43%   | 🔴     |
+| **Total**          | **33** | **49** | **67%** | 🟡 |
+
+Raw breakdown, for transparency: **21 satisfied `[x]`, 12 justified N/A `[~]`, 16 unmet `[ ]`.**
+
+**Unmet 🔴 MUST items:** `version_unique`, `vulnerability_report_process`, `test_policy`,
+`tests_are_added`, `warnings_fixed`.
+**Unmet 🟡 SHOULD items:** `vulnerability_report_private`.
+
+---
+
+## 🏗️ Basics
+
+### Project Website & Documentation
+
+- [x] 🔴 **description_good** — The project README/website clearly describes what the software does and what problem it solves.
+  - *Evidence URL:* [README.md](README.md) — describes perpetual prediction pools, the dual-vault design, and the problem of order-book complexity.
+
+- [x] 🔴 **interact** — The project provides information on how to obtain the software, submit bug reports, and contribute.
+  - *Evidence URL:* [README.md](README.md) "Getting Started" and [CONTRIBUTING.md](CONTRIBUTING.md).
+
+- [x] 🔴 **contribution** — `CONTRIBUTING.md` explains the contribution process (e.g., PRs are used, how to open one).
+  - *Evidence URL:* [CONTRIBUTING.md](CONTRIBUTING.md) "Pull Request Process".
+
+- [x] 🟡 **contribution_requirements** — `CONTRIBUTING.md` references acceptable contribution standards (coding style, tests required, etc.).
+  - *Evidence URL:* [CONTRIBUTING.md](CONTRIBUTING.md) "Coding Style" and "Verifying a Change".
+
+- [x] 🔴 **documentation_basics** — Basic documentation exists for the software (README, Wiki, or docs folder).
+  - *Evidence URL:* [README.md](README.md), plus [AGENTS.md](AGENTS.md) for architectural constraints.
+
+- [~] 🔴 **documentation_interface** — Reference documentation describes the external interface (API inputs/outputs, CLI flags, config schema, etc.).
+  - *Justification:* N/A. This is a browser UI with no external API, CLI, or public configuration schema. It is a statically exported client that talks to on-chain contracts; the external interface belongs to the contracts repository.
+
+### Other Basics
+
+- [x] 🔴 **discussion** — Project has a searchable, URL-addressable discussion mechanism.
+  - *Evidence URL:* [GitHub Issues](https://github.com/StabilityNexus/Fate-EVM-Frontend/issues) and the [Fate Discord channel](https://discord.com/channels/995968619034984528/1324064370883301386).
+
+- [x] 🟡 **english** — Documentation is provided in English and English bug reports/comments are accepted.
+  - *Note:* All documentation, issues, and code comments are in English.
+
+---
+
+## 🔄 Change Control
+
+### Version Control
+
+- [x] 🔵 **repo_distributed** — Project uses a distributed VCS (e.g., git). *(SUGGESTED)*
+  - *Evidence URL:* https://github.com/StabilityNexus/Fate-EVM-Frontend
+
+### Version Numbering
+
+- [ ] 🔴 **version_unique** — Each release has a unique version identifier (e.g., v1.0.0).
+  - *Note:* Unmet. The repository has no releases and no tags.
+
+- [ ] 🔵 **version_semver** — Project uses SemVer or CalVer format. *(SUGGESTED)*
+  - *Note:* Unmet, pending a first release.
+
+- [ ] 🔵 **version_tags** — Releases are tagged in the VCS. *(SUGGESTED)*
+  - *Note:* Unmet, pending a first release.
+
+### Release Notes
+
+- [~] 🔴 **release_notes** — Each release includes human-readable release notes summarizing major changes.
+  - *Justification:* N/A under the continuous-delivery exemption. The frontend is deployed to GitHub Pages on merge to `main` and is not distributed as a versioned artifact for external reuse. Users always receive the current deployment.
+
+- [~] 🔴 **release_notes_vulns** — Release notes identify every publicly known vulnerability (with CVE) fixed in that release.
+  - *Justification:* N/A. No publicly known vulnerabilities have been reported against this project, and no versioned releases are published.
+
+---
+
+## 🐛 Reporting
+
+### Bug Reporting
+
+- [x] 🔴 **report_process** — A bug-reporting process exists.
+  - *Evidence URL:* [CONTRIBUTING.md](CONTRIBUTING.md) "Reporting Issues" and [GitHub Issues](https://github.com/StabilityNexus/Fate-EVM-Frontend/issues).
+
+- [x] 🟡 **report_tracker** — An issue tracker is used to track individual bugs.
+  - *Evidence URL:* [GitHub Issues](https://github.com/StabilityNexus/Fate-EVM-Frontend/issues) — 34 issues in the last 12 months.
+
+- [x] 🔴 **report_responses** — A majority of bug reports submitted in the last 2–12 months have been acknowledged.
+  - *Self-certification note:* Of 34 issues opened in the last 12 months, 24 have been closed and 12 carry maintainer comments, so a clear majority received a response. 5 open issues currently have no reply.
+
+- [x] 🟡 **enhancement_responses** — More than 50% of enhancement requests in the last 2–12 months have received a response.
+  - *Self-certification note:* Same issue set; enhancement requests are triaged and closed alongside bug reports.
+
+- [x] 🔴 **report_archive** — Reports and responses are publicly archived and searchable.
+  - *Evidence URL:* [GitHub Issues](https://github.com/StabilityNexus/Fate-EVM-Frontend/issues) — public repository, full history readable without an account.
+
+### Vulnerability Reporting
+
+- [ ] 🔴 **vulnerability_report_process** — A vulnerability reporting process is documented (e.g., `SECURITY.md`).
+  - *Note:* Unmet. No `SECURITY.md` exists in this repository, and none exists at the `StabilityNexus` organisation level either.
+
+- [ ] 🟡 **vulnerability_report_private** — If private vulnerability reporting is supported, the method for private submission is documented.
+  - *Note:* Unmet, and dependent on `vulnerability_report_process`. To be documented in `SECURITY.md`.
+
+- [~] 🔴 **vulnerability_report_response** — Initial response to any vulnerability report received in the last 6 months was within 14 days.
+  - *Justification:* N/A. No vulnerability reports have been received.
+
+---
+
+## ✅ Quality
+
+### Build System
+
+- [x] 🔴 **build** — A working build system exists that can auto-rebuild from source.
+  - *Evidence URL:* `npm run build` in [package.json](package.json); the GitHub Pages workflow rebuilds from source on every merge to `main`.
+
+- [x] 🔵 **build_common_tools** — Common build tools are used. *(SUGGESTED)*
+  - *Evidence URL:* npm, with Next.js as the build tool. See [package.json](package.json).
+
+- [x] 🟡 **build_floss_tools** — The project can be built using only FLOSS tools.
+  - *Note:* Node.js, npm, Next.js, TypeScript and Tailwind are all open source. No proprietary tooling is required to build.
+
+### Automated Testing
+
+- [ ] 🔵 **test_invocation** — The test suite can be invoked in a standard way for the language. *(SUGGESTED)*
+  - *Note:* Unmet. There is no test runner configured in this repository.
+
+- [ ] 🔵 **test_most** — The test suite covers most code branches, input fields, and functionality. *(SUGGESTED)*
+  - *Estimated coverage %:* 0. No automated test suite exists.
+
+### New Functionality Testing Policy
+
+- [ ] 🔴 **test_policy** — The project has a general policy that new functionality must include tests.
+  - *Note:* Unmet. No such policy is stated, because no test suite exists to add tests to. Declaring the policy before the suite exists would be inaccurate.
+
+- [ ] 🔴 **tests_are_added** — Evidence exists that the test policy has been followed in recent major changes.
+  - *Note:* Unmet, dependent on `test_policy`.
+
+- [ ] 🔵 **tests_documented_added** — The test policy is documented in contribution instructions. *(SUGGESTED)*
+  - *Note:* Unmet, dependent on `test_policy`. [CONTRIBUTING.md](CONTRIBUTING.md) currently documents the verification steps that do exist: lint, build, and manual browser testing.
+
+### Linting / Warning Flags
+
+- [x] 🔴 **warnings** — At least one linter or compiler warning flag is enabled.
+  - *Tool used:* ESLint via `next lint`, configured in [eslint.config.mjs](eslint.config.mjs) with `eslint-config-next`. TypeScript type checking runs as part of `npm run build`.
+
+- [ ] 🔴 **warnings_fixed** — Warnings from the linter are addressed (not suppressed without reason).
+  - *Note:* Unmet. `npm run build` currently emits two ESLint warnings: a `react-hooks/exhaustive-deps` warning in `PoolConfigurationStep.tsx` and a `@next/next/no-img-element` warning in `TokenImage.tsx`. Both are understood and tracked.
+
+- [ ] 🔵 **warnings_strict** — Project uses maximum strictness in linter config where practical. *(SUGGESTED)*
+  - *Note:* Unmet. The project uses the `eslint-config-next` defaults rather than a hardened ruleset.
+
+---
+
+## 🔐 Security
+
+### Secure Development Knowledge
+
+- [x] 🔴 **know_secure_design** — At least one primary developer knows how to design secure software.
+  - *Self-certification note:* Maintainers are familiar with secure-by-default design and threat modelling for Web3 frontends, including the risks of transaction construction, approval scope, and displaying untrusted on-chain data.
+
+- [x] 🔴 **know_common_errors** — At least one primary developer knows common vulnerability types for this software's category.
+  - *Self-certification note:* Maintainers are familiar with XSS, injection, and supply-chain risks in the frontend, and with reentrancy, oracle manipulation, and decimal or unit-scaling errors on the contract side that the UI must not misrepresent.
+
+### Cryptography
+
+*The six criteria below are marked N/A for a shared reason: this project performs no cryptographic
+operations of its own. Transaction signing and key custody are delegated entirely to the user's
+wallet, and hashing and ABI encoding are handled by the viem library. The project neither
+implements, selects, nor stores cryptographic material.*
+
+- [~] 🔴 **crypto_published** — Only publicly reviewed cryptographic protocols/algorithms are used by default.
+  - *Justification:* N/A. See the shared note above. The underlying EVM primitives (ECDSA over secp256k1, keccak-256) are standard and are applied by the wallet and by viem, not by this project.
+
+- [~] 🟡 **crypto_call** — Project calls an established crypto library rather than reimplementing crypto functions.
+  - *Justification:* N/A by the shared note; where hashing or encoding is needed, viem is used. Nothing is reimplemented.
+
+- [~] 🔴 **crypto_working** — No broken algorithms are used.
+  - *Justification:* N/A. See the shared note above.
+
+- [~] 🔴 **crypto_keylength** — Key lengths meet NIST 2030 minimums by default.
+  - *Justification:* N/A. The project generates and stores no keys.
+
+- [~] 🔴 **crypto_password_storage** — Passwords for external users are stored as iterated salted hashes.
+  - *Justification:* N/A. There are no user accounts and no passwords. Authentication is wallet-based.
+
+- [~] 🔴 **crypto_random** — Cryptographic keys and nonces are generated using a CSPRNG.
+  - *Justification:* N/A. The project generates no cryptographic keys or nonces.
+
+- [x] 🟡 **delivery_unsigned** — Cryptographic hashes are NOT retrieved over plain HTTP without a signature check.
+  - *Note:* Dependencies are installed from the npm registry over HTTPS with integrity hashes pinned in `package-lock.json`. The application fetches no hashes over plain HTTP.
+
+---
+
+## 🔬 Analysis
+
+### Static Code Analysis
+
+- [x] 🔴 **static_analysis_fixed** — All medium+ severity vulnerabilities found by static analysis are fixed in a timely manner after confirmation.
+  - *Note:* No medium or higher severity findings have been reported by static analysis to date. The two outstanding ESLint warnings are a hook-dependency and an image-element warning, neither of which is a security finding; they are tracked under `warnings_fixed`.
+
+- [ ] 🔵 **static_analysis_common_vulnerabilities** — The static analysis tool includes checks for common vulnerabilities. *(SUGGESTED)*
+  - *Note:* Unmet. The ESLint configuration does not currently include a security ruleset such as `eslint-plugin-security`.
+
+- [ ] 🔵 **static_analysis_often** — Static analysis runs on every commit or at least daily. *(SUGGESTED)*
+  - *Note:* Unmet. Pull requests to this repository currently trigger no CI checks; the only workflows are the Pages deployment on merge and a merge-conflict labeller.
+
+### Dynamic Code Analysis
+
+- [ ] 🔵 **dynamic_analysis** — At least one dynamic analysis tool is applied before major releases. *(SUGGESTED)*
+  - *Note:* Unmet. No dynamic analysis tooling is configured.
+
+- [ ] 🔵 **dynamic_analysis_enable_assertions** — Dynamic analysis / testing runs with assertions enabled. *(SUGGESTED)*
+  - *Note:* Unmet, dependent on there being an automated test suite.
+
+- [~] 🔴 **dynamic_analysis_fixed** — Medium+ severity vulnerabilities found by dynamic analysis are fixed in a timely manner.
+  - *Justification:* N/A. No dynamic analysis has been run, so there are no findings to act on. This becomes applicable once `dynamic_analysis` is met.
+
+- [~] 🔵 **dynamic_analysis_unsafe** — If the project uses memory-unsafe languages, memory safety tools are used. *(SUGGESTED)*
+  - *Justification:* N/A. The project is written in TypeScript, a memory-safe language, and ships no native code.
+
+---
+
+## 📎 Project-Specific Notes
+
+**Full-Stack / Next.js.** The application is a static export (`output: "export"`), so it has no
+server runtime, no API routes, and no server-side session or credential handling. This removes a
+large class of criteria from scope, which is why the Cryptography section is entirely N/A.
+
+**Web3.** Contract-level security belongs to `StabilityNexus/Fate-Solidity`, which is assessed
+separately. This frontend must not misrepresent on-chain state; the most security-relevant class of
+bug here is unit confusion, since three distinct numeric scales are in play (base-token decimals read
+on-chain, WAD 1e18 for oracle values, and `DENOMINATOR = 100000` for contract fees). This is
+documented for contributors in [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
+
+---
+
+*This checklist complements [OpenSSF Scorecard](https://scorecard.dev/) (auto-detected checks) and is
+inspired by the [OpenSSF Best Practices Badge](https://www.bestpractices.dev/en/criteria/0) passing criteria.*
