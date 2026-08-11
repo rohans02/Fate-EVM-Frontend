@@ -12,7 +12,7 @@
 <!-- Organization Name -->
 <div align="center">
 
-[![Static Badge](https://img.shields.io/badge/Stability_Nexus-FateProtocol-228B22?style=for-the-badge&labelColor=FFC517)](https://fate.stability.nexus/)
+[![Static Badge](https://img.shields.io/badge/Stability_Nexus-FateProtocol-228B22?style=for-the-badge&labelColor=FFC517)](https://evm.fate.stability.nexus/)
 
 </div>
 
