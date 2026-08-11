@@ -66,6 +66,10 @@ export artifacts.
   breaks without them.
 - Do not introduce a server-side data path. The app must remain statically
   exportable.
+- Brand assets exist twice on purpose: `brand/` is the canonical kit and `public/`
+  is what the app serves. Changing one means changing both. Do not delete the
+  `public/` copies; `Navbar.tsx` imports `public/logo.svg` directly, and
+  `manifest.json` and `layout.tsx` reference the icons by path.
 
 ## Git Workflow
 
