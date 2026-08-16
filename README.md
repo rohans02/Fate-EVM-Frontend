@@ -43,6 +43,12 @@
   <img src="https://img.shields.io/youtube/channel/subscribers/UCZOG4YhFQdlGaLugr_e5BKw?style=flat&logo=youtube&logoColor=white&logoSize=auto&labelColor=FF0000&color=FF0000" alt="Youtube Badge"></a>
 </p>
 
+<p align="center">
+  <a href="https://scorecard.dev/viewer/?uri=github.com/StabilityNexus/Fate-EVM-Frontend">
+    <img src="https://api.scorecard.dev/projects/github.com/StabilityNexus/Fate-EVM-Frontend/badge" alt="OpenSSF Scorecard"/>
+  </a>
+</p>
+
 ---
 
 <div align="center">
