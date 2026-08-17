@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useAccount, useReadContracts } from "wagmi";
-import { formatUnits, Address, isAddress } from "viem";
+import { formatUnits, Address, isAddress, isAddressEqual } from "viem";
 import { useRouter } from "next/navigation";
 import { useFatePoolsStorage } from "@/lib/fatePoolHook";
 import { PortfolioPosition, PortfolioTransaction, SupportedChainId, PortfolioCache } from "@/lib/indexeddb/config";
@@ -34,9 +34,12 @@ import { UseFatePoolsStorageReturn } from "@/lib/fatePoolHook";
 import { FatePoolsIndexedDBManager } from "@/lib/indexeddb/manager";
 import { PredictionPoolABI } from "@/utils/abi/PredictionPool";
 import { CoinABI } from "@/utils/abi/Coin";
-import { FatePoolFactories } from "@/utils/addresses";
+import { FatePoolFactories, FactoryDeploymentBlocks } from "@/utils/addresses";
 import { getChainConfig } from "@/utils/chainConfig";
-import { getTransport } from "@/utils/rpcTransport";
+import { getTransport, getScanTransport } from "@/utils/rpcTransport";
+import { scanLogsChunked, getAbiEvent } from "@/lib/scanLogs";
+import { readScanWatermark, writeScanWatermark } from "@/lib/scanWatermark";
+import { logger } from "@/lib/logger";
 import { getPriceFeedName } from "@/utils/supportedChainFeed";
 import { PredictionPoolFactoryABI } from "@/utils/abi/PredictionPoolFactory";
 import { ChainlinkOracleABI } from "@/utils/abi/ChainlinkOracle";
@@ -145,7 +148,9 @@ const calculateTokenMetricsWithEvents = async (
   poolAddress: string,
   type: 'bull' | 'bear',
   baseTokenSymbol: string,
-  storage: UseFatePoolsStorageReturn
+  storage: UseFatePoolsStorageReturn,
+  baseTokenDecimals: number,
+  head: bigint
 ) => {
   const currentPrice = safeNumber(supply > 0 ? reserve / supply : 0);
   const currentValue = userTokens * currentPrice;
@@ -176,8 +181,14 @@ const calculateTokenMetricsWithEvents = async (
     }
     // 2. Fetch NEW transactions from blockchain (incremental)
     // Use buffer to avoid missing transactions at block boundaries (reorgs, timing issues)
-    const fetchFromBlock = minBlock > 100 ? minBlock - 100 : 0;
-    const newTransactions = await fetchUserTransactions(tokenAddress, userAddress, chainId, fetchFromBlock);
+    const { transactions: newTransactions, scanFailed, scannedThrough } = await fetchUserTransactions(
+      tokenAddress,
+      userAddress,
+      chainId,
+      minBlock,
+      baseTokenDecimals,
+      head
+    );
 
     // 3. Merge and deduplicate using stable IDs
     // Generate deterministic ID for transactions (handles missing transactionHash)
@@ -198,7 +209,20 @@ const calculateTokenMetricsWithEvents = async (
     }
 
     if (transactions.length === 0) {
-      // Fallback to current price if no transactions found
+      // The read failed and nothing was cached, so the cost basis is unknown: show it as unavailable.
+      if (scanFailed) {
+        return {
+          price: currentPrice,
+          currentValue,
+          costBasis: 0,
+          pnL: 0,
+          returns: 0,
+          totalFeesPaid: 0,
+          netInvestment: 0,
+          grossInvestment: 0,
+          costBasisUnavailable: true
+        };
+      }
       const costBasis = userTokens * currentPrice;
       return {
         price: currentPrice,
@@ -208,7 +232,8 @@ const calculateTokenMetricsWithEvents = async (
         returns: 0,
         totalFeesPaid: 0,
         netInvestment: 0,
-        grossInvestment: 0
+        grossInvestment: 0,
+        costBasisUnavailable: false
       };
     }
 
@@ -437,6 +462,17 @@ const calculateTokenMetricsWithEvents = async (
         } as PortfolioTransaction);
       }
       console.debug(`✅ Saved position and ${recentTxns.length} transactions to cache`);
+
+      // Only advance once trades are stored, and never past a dropped one: only the newest
+      // 30 are kept, and anything above the resume point is never scanned again.
+      if (scannedThrough !== null) {
+        const dropped = sortedTxns.length > recentTxns.length;
+        const oldestKept = recentTxns.length > 0 ? BigInt(recentTxns[0].blockNumber) : null;
+        const safeBlock = dropped && oldestKept !== null && oldestKept > BigInt(0)
+          ? oldestKept - BigInt(1)
+          : scannedThrough;
+        writeScanWatermark('trades', chainId, tokenAddress, safeBlock, userAddress);
+      }
     } catch (e) {
       console.error('Failed to save to cache:', e);
     }
@@ -449,28 +485,56 @@ const calculateTokenMetricsWithEvents = async (
       returns,
       totalFeesPaid,
       netInvestment,
-      grossInvestment
+      grossInvestment,
+      costBasisUnavailable: false
     };
 
   } catch (error) {
     console.error('Error calculating enhanced metrics with events:', error instanceof Error ? error : new Error(String(error)));
-    // Fallback to simple calculation
-    const costBasis = userTokens * currentPrice;
     return {
       price: currentPrice,
       currentValue,
-      costBasis,
+      costBasis: 0,
       pnL: 0,
       returns: 0,
       totalFeesPaid: 0,
       netInvestment: 0,
-      grossInvestment: 0
+      grossInvestment: 0,
+      costBasisUnavailable: true
     };
   }
 };
 
+const COIN_TRADE_EVENTS = [
+  getAbiEvent(CoinABI, 'Buy'),
+  getAbiEvent(CoinABI, 'Sell'),
+];
+
+const REORG_BUFFER = BigInt(100);
+
+const FALLBACK_LOOKBACK: Record<number, bigint> = {
+  11155111: BigInt(100_000),
+  61: BigInt(50_000),
+};
+
+const resolveScanFloor = (chainId: number, head: bigint): bigint => {
+  const deployment = FactoryDeploymentBlocks[chainId];
+  if (deployment !== undefined) return deployment;
+  const lookback = FALLBACK_LOOKBACK[chainId] ?? BigInt(50_000);
+  return head > lookback ? head - lookback : BigInt(0);
+};
+
 // Fetch user transactions from blockchain events
-const fetchUserTransactions = async (tokenAddress: string, userAddress: string, chainId: number, minBlock: number = 0) => {
+const fetchUserTransactions = async (
+  tokenAddress: string,
+  userAddress: string,
+  chainId: number,
+  minBlock: number,
+  baseTokenDecimals: number,
+  head: bigint
+) => {
+  // Set when a read fails, so the caller can tell "no history" from "couldn't read history".
+  let scanFailed = false;
   try {
     console.debug(`Fetching transactions for token: ${tokenAddress}, user: ${userAddress}, chain: ${chainId}`, {
       tokenAddress,
@@ -481,138 +545,65 @@ const fetchUserTransactions = async (tokenAddress: string, userAddress: string, 
     const chainConfig = getChainConfig(chainId);
     if (!chainConfig) {
       console.warn('No chain config found for chainId:', { chainId });
-      return [];
+      return { transactions: [], scanFailed: true, scannedThrough: null };
     }
 
     const publicClient = createPublicClient({
       chain: chainConfig.chain,
-      transport: getTransport(chainId)
+      transport: getScanTransport(chainId)
     });
 
-    // Buy event ABI
-    const buyEventABI = {
-      type: 'event',
-      name: 'Buy',
-      inputs: [
-        { name: 'buyer', type: 'address', indexed: true, internalType: 'address' },
-        { name: 'to', type: 'address', indexed: true, internalType: 'address' },
-        { name: 'amountAsset', type: 'uint256', indexed: false, internalType: 'uint256' },
-        { name: 'amountCoin', type: 'uint256', indexed: false, internalType: 'uint256' },
-        { name: 'feePaid', type: 'uint256', indexed: false, internalType: 'uint256' },
-      ]
-    } as const;
+    const watermark = readScanWatermark('trades', chainId, tokenAddress, userAddress);
+    const cachedThrough = minBlock > 0 ? BigInt(minBlock) : null;
+    const resumeFrom = [watermark, cachedThrough]
+      .filter((b): b is bigint => b !== null)
+      .reduce<bigint | null>((max, b) => (max === null || b > max ? b : max), null);
 
-    // Sell event ABI
-    const sellEventABI = {
-      type: 'event',
-      name: 'Sell',
-      inputs: [
-        { name: 'seller', type: 'address', indexed: true, internalType: 'address' },
-        { name: 'amountAsset', type: 'uint256', indexed: false, internalType: 'uint256' },
-        { name: 'amountCoin', type: 'uint256', indexed: false, internalType: 'uint256' },
-        { name: 'feePaid', type: 'uint256', indexed: false, internalType: 'uint256' },
-      ]
-    } as const;
+    const floor = resolveScanFloor(chainId, head);
+    const fromBlock = resumeFrom !== null
+      ? (resumeFrom > REORG_BUFFER ? resumeFrom - REORG_BUFFER : BigInt(0))
+      : floor;
 
-    console.debug('Fetching buy and sell events...');
+    if (fromBlock > head) {
+      return { transactions: [], scanFailed: false, scannedThrough: null };
+    }
 
-    // Helper function to fetch logs in chunks to avoid RPC limits
-    const fetchLogsInChunks = async (eventABI: any, args: any) => {
-      const currentBlock = await publicClient.getBlockNumber();
-      const chunkSize = BigInt(5000);
-      const allLogs: any[] = [];
-      const lookback = chainId === 11155111 ? BigInt(100000) : BigInt(50000);
+    // One pass with no address filter, then match in JS. Same call count, and filtering on the
+    // node would need hand-built topics because the user field is named differently per event.
+    const scan = await scanLogsChunked({
+      client: publicClient,
+      chainId,
+      address: tokenAddress as Address,
+      event: COIN_TRADE_EVENTS,
+      fromBlock,
+      toBlock: head,
+      label: `trades:${tokenAddress.slice(0, 10)}`,
+    });
 
-      // Use minBlock for incremental fetching
-      let startBlock: bigint;
-      if (minBlock > 0) {
-        startBlock = BigInt(minBlock) + BigInt(1);  // Start from next block after cached
-      } else {
-        startBlock = currentBlock > lookback ? currentBlock - lookback : BigInt(0);
-      }
+    scanFailed = scan.scanFailed;
+    const scannedThrough = scan.scannedSpan?.to ?? null;
 
-      // If startBlock is beyond currentBlock, no new transactions
-      if (startBlock > currentBlock) {
-        return [];
-      }
-
-      console.debug(`Scanning from block ${startBlock} to ${currentBlock} (${currentBlock - startBlock} blocks)`, {
-        startBlock,
-        currentBlock,
-        blockRange: currentBlock - startBlock
-      });
-
-      for (let fromBlock = startBlock; fromBlock <= currentBlock; fromBlock += chunkSize) {
-        const toBlock = fromBlock + chunkSize - BigInt(1) > currentBlock
-          ? currentBlock
-          : fromBlock + chunkSize - BigInt(1);
-
-        try {
-          const logs = await publicClient.getLogs({
-            address: tokenAddress as Address,
-            event: eventABI,
-            args,
-            fromBlock,
-            toBlock
-          });
-
-          allLogs.push(...logs);
-          if (logs.length > 0) {
-            console.debug(`Fetched ${logs.length} logs from block ${fromBlock} to ${toBlock}`, {
-              logCount: logs.length,
-              fromBlock,
-              toBlock
-            });
-          }
-        } catch (error: any) {
-          console.warn(`Failed to fetch logs from block ${fromBlock} to ${toBlock}`, {
-            fromBlock,
-            toBlock,
-            error: error?.shortMessage || error?.message
-          });
-
-          // If we get a block range error, try with smaller chunks
-          if (error?.message?.includes('range') || error?.message?.includes('blocks')) {
-            console.debug('Retrying with smaller chunk size...');
-            try {
-              const smallerChunkSize = BigInt(1000);
-              for (let smallFromBlock = fromBlock; smallFromBlock <= toBlock; smallFromBlock += smallerChunkSize) {
-                const smallToBlock = smallFromBlock + smallerChunkSize - BigInt(1) > toBlock
-                  ? toBlock
-                  : smallFromBlock + smallerChunkSize - BigInt(1);
-
-                const smallLogs = await publicClient.getLogs({
-                  address: tokenAddress as Address,
-                  event: eventABI,
-                  args,
-                  fromBlock: smallFromBlock,
-                  toBlock: smallToBlock
-                });
-
-                allLogs.push(...smallLogs);
-              }
-            } catch {
-              console.warn(`Retry also failed for block ${fromBlock} to ${toBlock}`, {
-                fromBlock,
-                toBlock
-              });
-            }
-          }
-        }
-      }
-
-      return allLogs;
+    const user = userAddress as Address;
+    const matchesUser = (log: typeof scan.logs[number], field: 'to' | 'seller'): boolean => {
+      const candidate = (log.args as Record<string, unknown> | undefined)?.[field];
+      return typeof candidate === 'string'
+        && isAddress(candidate)
+        && isAddressEqual(candidate as Address, user);
     };
 
-    // Fetch buy and sell events in parallel with chunking
-    const [buyLogs, sellLogs] = await Promise.all([
-      fetchLogsInChunks(buyEventABI, { buyer: userAddress as Address }),
-      fetchLogsInChunks(sellEventABI, { seller: userAddress as Address })
-    ]);
+    // Matched on `to`, not `buyer`: you can buy for someone else, and the cost belongs to
+    // whoever ends up holding the coins.
+    const buyLogs = scan.logs.filter((log) => log.eventName === 'Buy' && matchesUser(log, 'to'));
+    const sellLogs = scan.logs.filter((log) => log.eventName === 'Sell' && matchesUser(log, 'seller'));
 
-    console.debug(`Found ${buyLogs.length} buy events and ${sellLogs.length} sell events`, {
-      buyEvents: buyLogs.length,
-      sellEvents: sellLogs.length
+    logger.debug('fetchUserTransactions: scan complete', {
+      token: tokenAddress,
+      fromBlock: fromBlock.toString(),
+      toBlock: head.toString(),
+      requests: scan.requests,
+      matchedBuys: buyLogs.length,
+      matchedSells: sellLogs.length,
+      scanFailed
     });
 
     // Batch fetch block timestamps for accuracy
@@ -652,62 +643,38 @@ const fetchUserTransactions = async (tokenAddress: string, userAddress: string, 
       timestamp?: number;
     }> = [];
 
-    // Process buy events
-    for (const log of buyLogs) {
-      const amountAsset = Number(formatUnits(log.args.amountAsset!, 18));
-      const amountCoin = Number(formatUnits(log.args.amountCoin!, 18));
-      const price = amountCoin > 0 ? amountAsset / amountCoin : 0;
+    // amountAsset and feePaid use the base token's decimals; only amountCoin is always 18.
+    const toTransaction = (log: typeof buyLogs[number], type: 'buy' | 'sell') => {
+      const args = log.args as { amountAsset?: bigint; amountCoin?: bigint; feePaid?: bigint };
+      const amountAsset = Number(formatUnits(args.amountAsset ?? BigInt(0), baseTokenDecimals));
+      const amountCoin = Number(formatUnits(args.amountCoin ?? BigInt(0), 18));
 
-      console.debug(`BUY: ${amountCoin} tokens for ${amountAsset} WETH (price: ${price})`, {
-        amountCoin,
-        amountAsset,
-        price
-      });
-
-      transactions.push({
-        type: 'buy',
+      return {
+        type,
         blockNumber: log.blockNumber,
         amountAsset,
         amountCoin,
-        price,
-        transactionHash: log.transactionHash,
-        feePaid: Number(formatUnits(log.args.feePaid || BigInt(0), 18)),
+        price: amountCoin > 0 ? amountAsset / amountCoin : 0,
+        transactionHash: log.transactionHash ?? undefined,
+        feePaid: Number(formatUnits(args.feePaid ?? BigInt(0), baseTokenDecimals)),
         timestamp: blockTimestamps.get(log.blockNumber) || Date.now()
-      });
-    }
+      };
+    };
 
-    // Process sell events
-    for (const log of sellLogs) {
-      const amountAsset = Number(formatUnits(log.args.amountAsset!, 18));
-      const amountCoin = Number(formatUnits(log.args.amountCoin!, 18));
-      const price = amountCoin > 0 ? amountAsset / amountCoin : 0;
+    transactions.push(
+      ...buyLogs.map((log) => toTransaction(log, 'buy')),
+      ...sellLogs.map((log) => toTransaction(log, 'sell'))
+    );
 
-      console.debug(`SELL: ${amountCoin} tokens for ${amountAsset} WETH (price: ${price})`, {
-        amountCoin,
-        amountAsset,
-        price
-      });
-
-      transactions.push({
-        type: 'sell',
-        blockNumber: log.blockNumber,
-        amountAsset,
-        amountCoin,
-        price,
-        transactionHash: log.transactionHash,
-        feePaid: Number(formatUnits(log.args.feePaid || BigInt(0), 18)),
-        timestamp: blockTimestamps.get(log.blockNumber) || Date.now()
-      });
-    }
-
-    console.debug(`Total transactions processed: ${transactions.length}`, {
-      transactionCount: transactions.length
+    logger.debug('fetchUserTransactions: processed transactions', {
+      transactionCount: transactions.length,
+      baseTokenDecimals
     });
-    return transactions;
+    return { transactions, scanFailed, scannedThrough };
 
   } catch (error) {
     console.error('Error fetching transactions:', error instanceof Error ? error : new Error(String(error)));
-    return [];
+    return { transactions: [], scanFailed: true, scannedThrough: null };
   }
 };
 
@@ -725,7 +692,7 @@ const calculateTokenMetrics = (
   const returns =
     userTokens === 0 || avgPrice === 0 ? 0 : (pnL / costBasis) * 100;
 
-  return { price, currentValue, costBasis, pnL, returns };
+  return { price, currentValue, costBasis, pnL, returns, costBasisUnavailable: false };
 };
 
 interface PoolData {
@@ -747,6 +714,7 @@ interface PoolData {
   bullReturns: number;
   bearReturns: number;
   totalReturnPercentage: number;
+  costBasisUnavailable?: boolean;
   color: string;
   bullColor: string;
   bearColor: string;
@@ -942,74 +910,6 @@ const HistoricalInvestmentsTable: React.FC<{
   );
 };
 
-// History card component for showing past trades
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const HistoryCard: React.FC<{ pool: PoolData }> = ({ pool }) => {
-  return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 mb-4">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center space-x-2">
-          <div className="text-sm font-medium text-gray-900 dark:text-white">
-            {pool.name}
-          </div>
-          <div className="px-2 py-1 bg-gray-100 dark:bg-gray-700 rounded text-xs text-gray-600 dark:text-gray-300">
-            {pool.priceFeed}
-          </div>
-          <div className="px-2 py-1 bg-orange-100 dark:bg-orange-900 rounded text-xs text-orange-600 dark:text-orange-300">
-            Closed
-          </div>
-        </div>
-        <div className="text-right">
-          <div className={`text-sm font-semibold ${pool.totalPnL >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-            {pool.totalPnL >= 0 ? '+' : ''}{pool.totalPnL.toFixed(4)} {pool.baseTokenSymbol}
-          </div>
-          <div className={`text-xs ${pool.totalReturnPercentage >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-            ({pool.totalReturnPercentage >= 0 ? '+' : ''}{pool.totalReturnPercentage.toFixed(2)}%)
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 text-xs">
-        {/* Bull Position */}
-        {pool.hasBullPosition && (
-          <div className="space-y-1">
-            <div className="text-gray-500 dark:text-gray-400">Bull Position</div>
-            <div className="text-gray-900 dark:text-white">
-              Sold {pool.bullTokenSymbol}
-            </div>
-            <div className={`font-medium ${pool.bullPnL >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-              P&L: {pool.bullPnL >= 0 ? '+' : ''}{pool.bullPnL.toFixed(4)} {pool.baseTokenSymbol}
-            </div>
-            <div className="text-gray-500 dark:text-gray-400">
-              Return: {pool.bullReturns >= 0 ? '+' : ''}{pool.bullReturns.toFixed(2)}%
-            </div>
-          </div>
-        )}
-
-        {/* Bear Position */}
-        {pool.hasBearPosition && (
-          <div className="space-y-1">
-            <div className="text-gray-500 dark:text-gray-400">Bear Position</div>
-            <div className="text-gray-900 dark:text-white">
-              Sold {pool.bearTokenSymbol}
-            </div>
-            <div className={`font-medium ${pool.bearPnL >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-              P&L: {pool.bearPnL >= 0 ? '+' : ''}{pool.bearPnL.toFixed(4)} {pool.baseTokenSymbol}
-            </div>
-            <div className="text-gray-500 dark:text-gray-400">
-              Return: {pool.bearReturns >= 0 ? '+' : ''}{pool.bearReturns.toFixed(2)}%
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-600 flex justify-between text-xs text-gray-500 dark:text-gray-400">
-        <span>Original Investment: {pool.totalCostBasis.toFixed(4)} {pool.baseTokenSymbol}</span>
-        <span>Chain: {pool.chainId === 11155111 ? 'Sepolia' : 'Unknown'}</span>
-      </div>
-    </div>
-  );
-};
 
 // Enhanced summary card component with animations
 const SummaryCard = ({
@@ -1131,29 +1031,38 @@ const PositionCard = ({ pool }: { pool: PoolData }) => {
             })}{" "}
             {pool.baseTokenSymbol}
           </div>
-          <div
-            className={`text-xs font-medium px-2 py-1 rounded-full ${pool.totalPnL >= 0
-              ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-              : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-              }`}
-          >
-            {pool.totalPnL > 0 ? "+" : ""}
-            {pool.totalPnL.toLocaleString(undefined, {
-              minimumFractionDigits: 0,
-              maximumFractionDigits: 4,
-            })}{" "}
-            {pool.baseTokenSymbol} (
-            {pool.totalCostBasis > 0
-              ? ((pool.totalPnL / pool.totalCostBasis) * 100).toLocaleString(
-                undefined,
-                {
-                  minimumFractionDigits: 0,
-                  maximumFractionDigits: 2,
-                }
-              )
-              : "0"}
-            % )
-          </div>
+          {pool.costBasisUnavailable ? (
+            <div
+              className="text-xs font-medium px-2 py-1 rounded-full bg-neutral-100 text-neutral-600 dark:bg-neutral-700/40 dark:text-neutral-300"
+              title="Trade history could not be read from the RPC, so cost basis and P&L are unavailable."
+            >
+              Cost basis unavailable
+            </div>
+          ) : (
+            <div
+              className={`text-xs font-medium px-2 py-1 rounded-full ${pool.totalPnL >= 0
+                ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                }`}
+            >
+              {pool.totalPnL > 0 ? "+" : ""}
+              {pool.totalPnL.toLocaleString(undefined, {
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 4,
+              })}{" "}
+              {pool.baseTokenSymbol} (
+              {pool.totalCostBasis > 0
+                ? ((pool.totalPnL / pool.totalCostBasis) * 100).toLocaleString(
+                  undefined,
+                  {
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 2,
+                  }
+                )
+                : "0"}
+              % )
+            </div>
+          )}
         </div>
       </div>
 
@@ -1496,9 +1405,9 @@ const EnhancedPoolDataLoader = ({
   const storage = useFatePoolsStorage();
   // onSettled must fire exactly once per loader instance (success OR permanent failure)
   const settledRef = useRef(false);
-  // Step 1: Get basic pool information
-  const { data: poolBasicData, status: poolBasicStatus, fetchStatus: poolBasicFetchStatus } = useReadContracts({
-    contracts: [
+  // Wave 1: everything readable straight from the pool address (basics + fees).
+  const { data: poolStaticData, status: poolStaticStatus, fetchStatus: poolStaticFetchStatus } = useReadContracts({
+    contracts: poolAddress ? [
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'poolName' },
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'baseToken' },
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'bullCoin' },
@@ -1506,23 +1415,6 @@ const EnhancedPoolDataLoader = ({
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'oracle' },
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'getCurrentPrice' },
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'previousPrice' },
-    ],
-    query: {
-      enabled: !!poolAddress,
-    }
-  });
-
-  const poolName = poolBasicData?.[0]?.result as string;
-  const baseToken = poolBasicData?.[1]?.result as Address;
-  const bullTokenAddress = poolBasicData?.[2]?.result as Address;
-  const bearTokenAddress = poolBasicData?.[3]?.result as Address;
-  const oracleAddress = poolBasicData?.[4]?.result as Address;
-  const currentPrice = Number(formatUnits(poolBasicData?.[5]?.result as bigint || BigInt(0), 18));
-  const previousPrice = Number(formatUnits(poolBasicData?.[6]?.result as bigint || BigInt(0), 18));
-
-  // Step 2: Get fee information
-  const { data: feeData, fetchStatus: feeFetchStatus } = useReadContracts({
-    contracts: poolAddress ? [
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'mintFee' },
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'burnFee' },
       { address: poolAddress as Address, abi: PredictionPoolABI, functionName: 'creatorFee' },
@@ -1533,9 +1425,18 @@ const EnhancedPoolDataLoader = ({
     }
   });
 
-  // Step 3: Get token metadata and supplies
-  const { data: tokenData, fetchStatus: tokenFetchStatus } = useReadContracts({
-    contracts: bullTokenAddress && bearTokenAddress ? [
+  const poolName = poolStaticData?.[0]?.result as string;
+  const baseToken = poolStaticData?.[1]?.result as Address;
+  const bullTokenAddress = poolStaticData?.[2]?.result as Address;
+  const bearTokenAddress = poolStaticData?.[3]?.result as Address;
+  const oracleAddress = poolStaticData?.[4]?.result as Address;
+  const currentPrice = Number(formatUnits(poolStaticData?.[5]?.result as bigint || BigInt(0), 18));
+  const previousPrice = Number(formatUnits(poolStaticData?.[6]?.result as bigint || BigInt(0), 18));
+
+  // Wave 2: reads that depend on the token/oracle addresses resolved by wave 1.
+  const hasWave2Inputs = !!(baseToken && bullTokenAddress && bearTokenAddress && userAddress);
+  const { data: poolDynamicData, fetchStatus: poolDynamicFetchStatus, status: poolDynamicStatus } = useReadContracts({
+    contracts: hasWave2Inputs ? [
       { address: bullTokenAddress, abi: CoinABI, functionName: 'name' },
       { address: bullTokenAddress, abi: CoinABI, functionName: 'symbol' },
       { address: bullTokenAddress, abi: CoinABI, functionName: 'totalSupply' },
@@ -1543,78 +1444,56 @@ const EnhancedPoolDataLoader = ({
       { address: bearTokenAddress, abi: CoinABI, functionName: 'name' },
       { address: bearTokenAddress, abi: CoinABI, functionName: 'symbol' },
       { address: bearTokenAddress, abi: CoinABI, functionName: 'totalSupply' },
-    ] : [],
-    query: {
-      enabled: !!(bullTokenAddress && bearTokenAddress),
-    }
-  });
-
-  // Step 4: Get reserves (base token balances in bull/bear tokens)
-  const { data: reserveData, fetchStatus: reserveFetchStatus } = useReadContracts({
-    contracts: baseToken && bullTokenAddress && bearTokenAddress ? [
       { address: baseToken, abi: ERC20ABI, functionName: 'balanceOf', args: [bullTokenAddress] },
       { address: baseToken, abi: ERC20ABI, functionName: 'balanceOf', args: [bearTokenAddress] },
       { address: baseToken, abi: ERC20ABI, functionName: 'symbol' },
       { address: baseToken, abi: ERC20ABI, functionName: 'decimals' },
       { address: baseToken, abi: ERC20ABI, functionName: 'name' },
-    ] : [],
-    query: {
-      enabled: !!(baseToken && bullTokenAddress && bearTokenAddress),
-    }
-  });
-
-  // Step 5: Get user balances if user is connected
-  const { data: userBalanceData, fetchStatus: userBalanceFetchStatus } = useReadContracts({
-    contracts: userAddress && bullTokenAddress && bearTokenAddress && baseToken ? [
       { address: bullTokenAddress, abi: CoinABI, functionName: 'balanceOf', args: [userAddress as Address] },
       { address: bearTokenAddress, abi: CoinABI, functionName: 'balanceOf', args: [userAddress as Address] },
       { address: baseToken, abi: ERC20ABI, functionName: 'balanceOf', args: [userAddress as Address] },
+      { address: (oracleAddress && oracleAddress !== "0x0000000000000000000000000000000000000000") ? oracleAddress : baseToken, abi: ChainlinkOracleABI, functionName: 'priceFeed' },
     ] : [],
     query: {
-      enabled: !!(userAddress && bullTokenAddress && bearTokenAddress && baseToken),
-    }
-  });
-
-  // Step 6: Get underlying oracle address
-  const { data: underlyingOracleData, fetchStatus: underlyingOracleFetchStatus } = useReadContracts({
-    contracts: oracleAddress && oracleAddress !== "0x0000000000000000000000000000000000000000" ? [
-      { address: oracleAddress, abi: ChainlinkOracleABI, functionName: 'priceFeed' },
-    ] : [],
-    query: {
-      enabled: !!(oracleAddress && oracleAddress !== "0x0000000000000000000000000000000000000000"),
+      enabled: hasWave2Inputs,
     }
   });
 
   useEffect(() => {
-    if (!poolBasicData || !tokenData || !reserveData || !userBalanceData || !userAddress) return;
+    if (!poolStaticData || !poolDynamicData || !userAddress) return;
 
     const processPoolData = async () => {
-      const bullName = tokenData[0]?.result as string || 'Bull Token';
-      const bullSymbol = tokenData[1]?.result as string || 'BULL';
-      const bullSupply = Number(formatUnits(tokenData[2]?.result as bigint || BigInt(0), 18));
-      const vaultCreator = tokenData[3]?.result as Address || '';
-      const bearName = tokenData[4]?.result as string || 'Bear Token';
-      const bearSymbol = tokenData[5]?.result as string || 'BEAR';
-      const bearSupply = Number(formatUnits(tokenData[6]?.result as bigint || BigInt(0), 18));
+      const bullName = poolDynamicData[0]?.result as string || 'Bull Token';
+      const bullSymbol = poolDynamicData[1]?.result as string || 'BULL';
+      const bullSupply = Number(formatUnits(poolDynamicData[2]?.result as bigint || BigInt(0), 18));
+      const vaultCreator = poolDynamicData[3]?.result as Address || '';
+      const bearName = poolDynamicData[4]?.result as string || 'Bear Token';
+      const bearSymbol = poolDynamicData[5]?.result as string || 'BEAR';
+      const bearSupply = Number(formatUnits(poolDynamicData[6]?.result as bigint || BigInt(0), 18));
 
-      const baseTokenDecimals = Number(reserveData[3]?.result ?? 18);
-      const bullReserve = Number(formatUnits((reserveData[0]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
-      const bearReserve = Number(formatUnits((reserveData[1]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
-      const rawSymbol = reserveData[2]?.result as string | undefined;
-      const symbolCallFailed = (reserveData[2] as { status?: string } | undefined)?.status === 'failure';
+      // Defaulting to 18 on a failed read misprices every amount by 10^(18-d).
+      const rawDecimals = poolDynamicData[10]?.result;
+      const decimalsCallFailed = (poolDynamicData[10] as { status?: string } | undefined)?.status === 'failure';
+      if (rawDecimals === undefined && !decimalsCallFailed) return; // Still in flight
+      const baseTokenDecimals = rawDecimals !== undefined ? Number(rawDecimals) : 18;
+
+      const bullReserve = Number(formatUnits((poolDynamicData[7]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
+      const bearReserve = Number(formatUnits((poolDynamicData[8]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
+      const rawSymbol = poolDynamicData[9]?.result as string | undefined;
+      const symbolCallFailed = (poolDynamicData[9] as { status?: string } | undefined)?.status === 'failure';
       if (!rawSymbol && !symbolCallFailed) return; // Still in flight — wait for next render
-      const baseTokenName = reserveData[4]?.result as string || 'Unknown Token';
+      const baseTokenName = poolDynamicData[11]?.result as string || 'Unknown Token';
 
-      const userBullTokens = Number(formatUnits((userBalanceData?.[0]?.result as bigint) ?? BigInt(0), 18));
-      const userBearTokens = Number(formatUnits((userBalanceData?.[1]?.result as bigint) ?? BigInt(0), 18));
-      const userBaseTokenBalance = Number(formatUnits((userBalanceData?.[2]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
+      const userBullTokens = Number(formatUnits((poolDynamicData?.[12]?.result as bigint) ?? BigInt(0), 18));
+      const userBearTokens = Number(formatUnits((poolDynamicData?.[13]?.result as bigint) ?? BigInt(0), 18));
+      const userBaseTokenBalance = Number(formatUnits((poolDynamicData?.[14]?.result as bigint) ?? BigInt(0), baseTokenDecimals));
 
       console.log(`🔍 Pool ${poolAddress} user balances:`, {
         userBullTokens,
         userBearTokens,
         userBaseTokenBalance,
-        rawBullBalance: userBalanceData?.[0]?.result,
-        rawBearBalance: userBalanceData?.[1]?.result
+        rawBullBalance: poolDynamicData?.[12]?.result,
+        rawBearBalance: poolDynamicData?.[13]?.result
       });
 
 
@@ -1629,7 +1508,7 @@ const EnhancedPoolDataLoader = ({
         bearReserve,
       });
 
-      const underlyingOracleAddress = underlyingOracleData?.[0]?.result as string;
+      const underlyingOracleAddress = poolDynamicData?.[15]?.result as string;
       const finalOracleAddress = underlyingOracleAddress || oracleAddress;
       const priceFeedName = getPriceFeedName(finalOracleAddress, chainId);
 
@@ -1644,6 +1523,13 @@ const EnhancedPoolDataLoader = ({
       let bullMetrics, bearMetrics;
 
       try {
+        const scanChainConfig = getChainConfig(chainId);
+        if (!scanChainConfig) throw new Error(`No chain config for chainId ${chainId}`);
+        const head = await createPublicClient({
+          chain: scanChainConfig.chain,
+          transport: getScanTransport(chainId)
+        }).getBlockNumber();
+
         // Always calculate metrics if user has transaction history, even if current balance is 0
         bullMetrics = await calculateTokenMetricsWithEvents(
           bullReserve,
@@ -1655,7 +1541,9 @@ const EnhancedPoolDataLoader = ({
           poolAddress,
           'bull',
           baseTokenSymbol,
-          storage
+          storage,
+          baseTokenDecimals,
+          head
         );
 
         bearMetrics = await calculateTokenMetricsWithEvents(
@@ -1668,7 +1556,9 @@ const EnhancedPoolDataLoader = ({
           poolAddress,
           'bear',
           baseTokenSymbol,
-          storage
+          storage,
+          baseTokenDecimals,
+          head
         );
       } catch (error) {
         console.error('Error calculating metrics with events, using fallback:', error instanceof Error ? error : new Error(String(error)));
@@ -1681,10 +1571,10 @@ const EnhancedPoolDataLoader = ({
       }
 
       const fees = {
-        mintFee: Number(formatUnits(feeData?.[0]?.result as bigint || BigInt(0), 4)),
-        burnFee: Number(formatUnits(feeData?.[1]?.result as bigint || BigInt(0), 4)),
-        creatorFee: Number(formatUnits(feeData?.[2]?.result as bigint || BigInt(0), 4)),
-        treasuryFee: Number(formatUnits(feeData?.[3]?.result as bigint || BigInt(0), 4)),
+        mintFee: Number(formatUnits(poolStaticData?.[7]?.result as bigint || BigInt(0), 4)),
+        burnFee: Number(formatUnits(poolStaticData?.[8]?.result as bigint || BigInt(0), 4)),
+        creatorFee: Number(formatUnits(poolStaticData?.[9]?.result as bigint || BigInt(0), 4)),
+        treasuryFee: Number(formatUnits(poolStaticData?.[10]?.result as bigint || BigInt(0), 4)),
       };
 
       const poolData: PoolData = {
@@ -1706,6 +1596,7 @@ const EnhancedPoolDataLoader = ({
         bullReturns: bullMetrics.returns,
         bearReturns: bearMetrics.returns,
         totalReturnPercentage: (bullMetrics.costBasis + bearMetrics.costBasis) > 0 ? ((bullMetrics.pnL + bearMetrics.pnL) / (bullMetrics.costBasis + bearMetrics.costBasis)) * 100 : 0,
+        costBasisUnavailable: bullMetrics.costBasisUnavailable || bearMetrics.costBasisUnavailable || decimalsCallFailed,
         color: CHART_COLORS[index % CHART_COLORS.length],
         bullColor: BULL_COLORS[index % BULL_COLORS.length],
         bearColor: BEAR_COLORS[index % BEAR_COLORS.length],
@@ -1756,27 +1647,27 @@ const EnhancedPoolDataLoader = ({
     };
 
     processPoolData();
-  }, [poolBasicData, tokenData, reserveData, userBalanceData, underlyingOracleData, feeData, poolAddress, onDataLoad, onSettled, userAddress, chainId, index, baseToken, bearTokenAddress, bullTokenAddress, currentPrice, oracleAddress, poolName, previousPrice, storage]);
+  }, [poolStaticData, poolDynamicData, poolAddress, onDataLoad, onSettled, userAddress, chainId, index, baseToken, bearTokenAddress, bullTokenAddress, currentPrice, oracleAddress, poolName, previousPrice, storage]);
 
   // Safety-net: fire onSettled when all queries reach a terminal state (success or
   // permanent failure) on paths where processPoolData's early-returns never execute.
-  // Requires poolBasicStatus !== 'pending' to avoid firing before the first fetch runs.
+  // Requires poolStaticStatus !== 'pending' to avoid firing before the first fetch runs.
   useEffect(() => {
     if (settledRef.current) return;
     if (!userAddress) return;
-    if (poolBasicStatus === 'pending') return; // primary query hasn't settled yet
+    if (poolStaticStatus === 'pending') return; // primary query hasn't settled yet
+    // An enabled wave-2 query also reads 'idle' on the render it is enabled, so counting
+    // that as terminal paints the empty state before positions arrive.
+    const wave2Terminal = !hasWave2Inputs || poolDynamicStatus !== 'pending';
     const allIdle =
-      poolBasicFetchStatus === 'idle' &&
-      feeFetchStatus === 'idle' &&
-      tokenFetchStatus === 'idle' &&
-      reserveFetchStatus === 'idle' &&
-      userBalanceFetchStatus === 'idle' &&
-      underlyingOracleFetchStatus === 'idle';
+      poolStaticFetchStatus === 'idle' &&
+      poolDynamicFetchStatus === 'idle' &&
+      wave2Terminal;
     if (allIdle) {
       settledRef.current = true;
       onSettled?.();
     }
-  }, [poolBasicStatus, poolBasicFetchStatus, feeFetchStatus, tokenFetchStatus, reserveFetchStatus, userBalanceFetchStatus, underlyingOracleFetchStatus, userAddress, onSettled]);
+  }, [poolStaticStatus, poolStaticFetchStatus, poolDynamicFetchStatus, poolDynamicStatus, hasWave2Inputs, userAddress, onSettled]);
 
   return null;
 };
@@ -1959,6 +1850,7 @@ export default function PortfolioPage() {
     query: {
       enabled: !!(factoryAddress && isAddress(factoryAddress as Address) && factoryAddress !== ZERO_ADDRESS),
       refetchInterval: 30000, // Refetch every 30 seconds for fresh data
+      refetchIntervalInBackground: false,
     }
   });
   const { data: allPoolsData, isPending: isPoolsQueryPending } = poolsQuery;

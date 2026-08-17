@@ -18,6 +18,7 @@ const SORT_LABELS: Record<PoolSortField, string> = {
   name: "Name",
   fees: "Total Fees",
   bullBias: "Bull Bias",
+  volume: "Recent Volume",
 };
 
 interface PoolSearchProps {

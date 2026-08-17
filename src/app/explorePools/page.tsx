@@ -14,7 +14,8 @@ import type { Address, PublicClient } from "viem";
 import { FatePoolFactories } from "@/utils/addresses";
 import { getPriceFeedName } from "@/utils/supportedChainFeed";
 import { getChainConfig } from "@/utils/chainConfig";
-import { getTransport } from "@/utils/rpcTransport";
+import { getTransport, getScanTransport } from "@/utils/rpcTransport";
+import { scanLogsChunked, getAbiEvent } from "@/lib/scanLogs";
 import type { Token, Pool, ChainLoadingState, PoolSortState, PoolSortField } from "@/lib/types";
 import { useFatePoolsStorage } from "@/lib/fatePoolHook";
 import type { SupportedChainId } from "@/lib/indexeddb/config";
@@ -29,6 +30,61 @@ import { logger } from "@/lib/logger";
 
 // Constants for configuration
 const DENOMINATOR = 100_000;
+// ~24h of blocks, so this costs one call per coin. Lifetime volume from logs would cost ~200.
+const VOLUME_WINDOW_BLOCKS: Record<number, bigint> = {
+  11155111: BigInt(7_200), // ~12s blocks
+  61: BigInt(6_600),       // ~13s blocks
+};
+
+const COIN_TRADE_EVENTS = [
+  getAbiEvent(CoinABI, 'Buy'),
+  getAbiEvent(CoinABI, 'Sell'),
+];
+
+const fetchRecentVolume = async (
+  chainId: number,
+  chain: PublicClient['chain'],
+  coins: Address[],
+  baseDecimals: number,
+  head: bigint
+): Promise<number | undefined> => {
+  const window = VOLUME_WINDOW_BLOCKS[chainId];
+  if (window === undefined) return undefined;
+
+  const scanClient = createPublicClient({ chain, transport: getScanTransport(chainId) });
+  const fromBlock = head > window ? head - window : BigInt(0);
+
+  const scans = await Promise.all(
+    coins.map((coin) =>
+      scanLogsChunked({
+        client: scanClient,
+        chainId,
+        address: coin,
+        event: COIN_TRADE_EVENTS,
+        fromBlock,
+        toBlock: head,
+        label: `volume:${coin.slice(0, 10)}`,
+      })
+    )
+  );
+
+  if (scans.some((scan) => scan.scanFailed)) return undefined;
+
+  // Buy amounts include the fee but sell amounts do not, so add the sell fee back to match.
+  const total = scans
+    .flatMap((scan) => scan.logs)
+    .reduce((sum, log) => {
+      const args = log.args as Record<string, unknown> | undefined;
+      if (typeof args?.amountAsset !== 'bigint') return sum;
+      const fee = log.eventName === 'Sell' && typeof args.feePaid === 'bigint'
+        ? args.feePaid
+        : BigInt(0);
+      return sum + args.amountAsset + fee;
+    }, BigInt(0));
+
+  return Number(formatUnits(total, baseDecimals));
+};
+
 const BATCH_SIZE = 3;
 const BATCH_DELAY = 200;
 const FETCH_COOLDOWN = 5000;
@@ -190,8 +246,8 @@ function ExploreFatePoolsClient() {
           batch: { multicall: true }
         });
         
-        await publicClient.getBlockNumber();
-        
+        const headBlock = await publicClient.getBlockNumber();
+
         logger.debug(`Fetching pools from chain ${chainId} (${chainConfig.name}) using factory: ${factoryAddress}`, {
           chainId,
           chainName: chainConfig.name,
@@ -295,7 +351,14 @@ function ExploreFatePoolsClient() {
             const bullPercentage = totalValue > 0 ? (bullPriceBuy * bullSupply / totalValue * 100) : 50;
             const bearPercentage = 100 - bullPercentage;
             const tvl = bull.asset_balance + bear.asset_balance;
-            const pool: Pool = { id: addr, name: name as string, baseToken: baseToken as Address, priceFeedAddress: underlyingPriceFeedAddress, creator: vaultCreator as Address, bullPercentage: bullPercentage, bearPercentage: bearPercentage, bullToken: bull, bearToken: bear, chainId, chainName: chainConfig.name, vaultFee: Number(mintFee) / DENOMINATOR * 100, vaultCreatorFee: Number(creatorFee) / DENOMINATOR * 100, treasuryFee: Number(treasuryFee) / DENOMINATOR * 100, mintFee: Number(mintFee) / DENOMINATOR * 100, burnFee: Number(burnFee) / DENOMINATOR * 100, previous_price: BigInt(0), baseDecimals, baseSymbol, tvl };
+            const volumeRecent = await fetchRecentVolume(
+              chainId,
+              chainConfig.chain,
+              [bullAddr as Address, bearAddr as Address],
+              baseDecimals,
+              headBlock
+            ).catch(() => undefined);
+            const pool: Pool = { id: addr, name: name as string, volumeRecent, baseToken: baseToken as Address, priceFeedAddress: underlyingPriceFeedAddress, creator: vaultCreator as Address, bullPercentage: bullPercentage, bearPercentage: bearPercentage, bullToken: bull, bearToken: bear, chainId, chainName: chainConfig.name, vaultFee: Number(mintFee) / DENOMINATOR * 100, vaultCreatorFee: Number(creatorFee) / DENOMINATOR * 100, treasuryFee: Number(treasuryFee) / DENOMINATOR * 100, mintFee: Number(mintFee) / DENOMINATOR * 100, burnFee: Number(burnFee) / DENOMINATOR * 100, previous_price: BigInt(0), baseDecimals, baseSymbol, tvl };
             return pool;
           });
           const successfulPools = (await Promise.all(batchPromises)).filter((pool): pool is Pool => pool !== null);
@@ -428,9 +491,32 @@ function ExploreFatePoolsClient() {
             }
           }
         }
+      if (isOnline && convertedPools.length > 0) {
+        try {
+          const volumeClient = createPublicClient({
+            chain: chainConfig.chain,
+            transport: getTransport(chainId)
+          });
+          const cachedHead = await volumeClient.getBlockNumber();
+          await Promise.all(convertedPools.map(async (pool) => {
+            pool.volumeRecent = await fetchRecentVolume(
+              chainId,
+              chainConfig.chain,
+              [pool.bullToken.id, pool.bearToken.id],
+              pool.baseDecimals,
+              cachedHead
+            ).catch(() => undefined);
+          }));
+        } catch (volumeError) {
+          logger.debug(`Volume scan skipped for cached pools on chain ${chainId}`, {
+            message: (volumeError as Error)?.message
+          });
+        }
+      }
+
       return convertedPools;
     }
-    
+
     updateChainState(chainId, { loading: false, error: `Unable to fetch pools` });
     return [];
   }, [isInitialized, isOnline, fetchCoin, updateChainState, batchSavePools, saveChainStatus, getAllPools, getTokensForPool]);
@@ -643,6 +729,14 @@ function ExploreFatePoolsClient() {
       }
       case 'bullBias':
         return (a.bullPercentage - b.bullPercentage) * dir;
+      case 'volume': {
+        const volA = a.volumeRecent;
+        const volB = b.volumeRecent;
+        if (volA === undefined && volB === undefined) return 0;
+        if (volA === undefined) return 1;
+        if (volB === undefined) return -1;
+        return (volA - volB) * dir;
+      }
       case 'tvl':
       default: {
         const tvlA = Number(formatUnits(a.tvl, a.baseDecimals));

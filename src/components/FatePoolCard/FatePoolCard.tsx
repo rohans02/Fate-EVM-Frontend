@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowRight, TrendingUp, TrendingDown, Info, Zap, Layers } from "lucide-react";
+import { ArrowRight, TrendingUp, TrendingDown, Info, Zap, Layers, Activity } from "lucide-react";
 import { RangeSlider } from "./RangeSlider";
 import {
   Tooltip,
@@ -7,7 +7,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { formatTVL } from "@/utils/format";
+import { formatTVL, formatNumber } from "@/utils/format";
 
 interface PredictionCardProps {
   name: string;
@@ -27,6 +27,7 @@ interface PredictionCardProps {
     treasury: number;
   };
   tvl?: bigint;
+  volumeRecent?: number;
   baseDecimals?: number;
   baseSymbol?: string;
   chainName?: string;
@@ -42,6 +43,7 @@ export function PredictionCard({
   bearPercentage,
   fees,
   tvl,
+  volumeRecent,
   baseDecimals,
   baseSymbol,
   chainName,
@@ -150,34 +152,46 @@ export function PredictionCard({
           />
         </div>
 
-        {/* TVL Section */}
-        {tvl !== undefined && baseDecimals !== undefined && baseSymbol !== undefined && (
-          <div className="flex items-center justify-between px-2 pt-1">
+        <div className="grid grid-cols-3 gap-2 px-2 pt-3 border-t border-gray-100 dark:border-zinc-800/50 mt-4">
+          <div className="min-w-0">
             <div className="flex items-center gap-1.5 text-xs text-gray-500">
-              <Layers size={12} className="text-indigo-500" />
-              <span className="font-medium">TVL</span>
+              <Layers size={12} className="text-indigo-500 shrink-0" />
+              <span className="font-medium truncate">TVL</span>
             </div>
-            <span className="text-sm font-bold tabular-nums text-gray-900 dark:text-white">
-              {formatTVL(tvl, baseDecimals, baseSymbol)}
-            </span>
+            <div className="truncate text-sm font-bold tabular-nums text-gray-900 dark:text-white mt-0.5">
+              {tvl !== undefined && baseDecimals !== undefined && baseSymbol !== undefined
+                ? formatTVL(tvl, baseDecimals, baseSymbol)
+                : <span className="text-gray-400">&mdash;</span>}
+            </div>
           </div>
-        )}
 
-        {/* Fees Section */}
-        <div className="flex items-center justify-between px-2 pt-1 border-t border-gray-100 dark:border-zinc-800/50 mt-4">
-          <div className="flex items-center gap-1.5 text-xs text-gray-500">
-            <Zap size={12} className="text-amber-500" fill="currentColor" />
-            <span className="font-medium">Total Fees</span>
+          <div className="min-w-0">
+            <div
+              className="flex items-center gap-1.5 text-xs text-gray-500"
+              title="Traded volume over roughly the last 24h, across both coins. Not lifetime volume."
+            >
+              <Activity size={12} className="text-sky-500 shrink-0" />
+              <span className="font-medium truncate">Vol 24h</span>
+            </div>
+            <div className="truncate text-sm font-bold tabular-nums text-gray-900 dark:text-white mt-0.5">
+              {volumeRecent !== undefined && baseSymbol !== undefined
+                ? `${formatNumber(volumeRecent)} ${baseSymbol}`
+                : <span className="text-gray-400">&mdash;</span>}
+            </div>
           </div>
 
           <TooltipProvider delayDuration={0}>
             <Tooltip>
               <TooltipTrigger asChild>
-                <div className="flex items-center gap-1 cursor-help group/fee">
-                  <span className="text-sm font-bold text-gray-900 dark:text-white group-hover/fee:text-indigo-500 transition-colors">
+                <div className="min-w-0 cursor-help group/fee">
+                  <div className="flex items-center gap-1.5 text-xs text-gray-500">
+                    <Zap size={12} className="text-amber-500 shrink-0" fill="currentColor" />
+                    <span className="font-medium truncate">Fees</span>
+                    <Info size={10} className="text-gray-400 shrink-0" />
+                  </div>
+                  <div className="truncate text-sm font-bold tabular-nums text-gray-900 dark:text-white group-hover/fee:text-indigo-500 transition-colors mt-0.5">
                     {totalFee}%
-                  </span>
-                  <Info size={12} className="text-gray-400" />
+                  </div>
                 </div>
               </TooltipTrigger>
               <TooltipContent side="top" className="bg-white dark:bg-zinc-900 border-gray-200 dark:border-zinc-800 p-3 shadow-xl rounded-xl">

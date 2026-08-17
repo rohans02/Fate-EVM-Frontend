@@ -76,14 +76,16 @@ export interface Pool extends PredictionPool {
   baseDecimals: number;
   baseSymbol: string;
   tvl: bigint;
+  // Undefined means not scanned yet, which is different from a real zero.
+  volumeRecent?: number;
   // Additional fee properties for compatibility
   mintFee?: number;
   burnFee?: number;
 }
 
-// Pool Explorer sort controls. tvl sorts on the base-unit reserve total
-// (not USD-normalized, so cross-base-token order is not apples-to-apples).
-export type PoolSortField = 'name' | 'tvl' | 'fees' | 'bullBias';
+// tvl is in each pool's own base token, so cross-token order is approximate.
+// volume is a recent window, not lifetime.
+export type PoolSortField = 'name' | 'tvl' | 'fees' | 'bullBias' | 'volume';
 export type SortOrder = 'asc' | 'desc';
 
 export interface PoolSortState {

@@ -3,7 +3,7 @@ import { ExternalLink, TrendingUp, TrendingDown, ChevronUp, ChevronDown, Chevron
 import type { Pool, PoolSortState, PoolSortField } from "@/lib/types";
 import { getPriceFeedName as getPriceFeedNameUtil } from "@/utils/supportedChainFeed";
 import { getHebeswapPairByAddress } from "@/utils/hebeswapConfig";
-import { formatTVL } from "@/utils/format";
+import { formatTVL, formatNumber } from "@/utils/format";
 
 // Helper function to get oracle name/description
 const getOracleName = (oracleAddress: string, chainId: number): string => {
@@ -87,6 +87,7 @@ const PoolTableView: React.FC<PoolTableViewProps> = ({ pools, onUsePool, isConne
                 Price Feed
               </th>
               <SortableHeader label="TVL" field="tvl" sortState={sortState} onSort={onSort} title="Total value locked, shown in each pool's own base token (not converted to a common unit)." />
+              <SortableHeader label="Volume" field="volume" sortState={sortState} onSort={onSort} className="hidden lg:table-cell" title="Traded volume over roughly the last 24h, summed from Buy and Sell events across both coins and shown in the pool's own base token. Not lifetime volume." />
               <SortableHeader label="Bull/Bear Split" field="bullBias" sortState={sortState} onSort={onSort} />
               <SortableHeader label="Fees" field="fees" sortState={sortState} onSort={onSort} className="hidden md:table-cell" />
               <th className="hidden px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 md:table-cell sm:px-6 sm:py-4">
@@ -122,6 +123,13 @@ const PoolTableView: React.FC<PoolTableViewProps> = ({ pools, onUsePool, isConne
                 <td className="px-4 py-4 sm:px-6">
                   <div className="text-sm font-medium tabular-nums text-gray-900 dark:text-white">
                     {formatTVL(pool.tvl, pool.baseDecimals, pool.baseSymbol)}
+                  </div>
+                </td>
+                <td className="hidden px-4 py-4 lg:table-cell sm:px-6">
+                  <div className="text-sm font-medium tabular-nums text-gray-900 dark:text-white">
+                    {pool.volumeRecent === undefined
+                      ? <span className="text-gray-400 dark:text-gray-500">—</span>
+                      : `${formatNumber(pool.volumeRecent)} ${pool.baseSymbol}`}
                   </div>
                 </td>
                 <td className="px-4 py-4 sm:px-6">
