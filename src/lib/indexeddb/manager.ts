@@ -368,8 +368,7 @@ export class FatePoolsIndexedDBManager {
     transaction: Omit<PortfolioTransaction, 'timestamp'> & { timestamp?: number }
   ): Promise<void> {
     const now = Date.now();
-    // A trade happened when its block was mined, not when this row was written. Callers that
-    // resolved the block timestamp pass it in; only fall back to write time when they could not.
+    // A trade happened when its block was mined, not when this row was written.
     const transactionData: PortfolioTransaction = {
       ...transaction,
       timestamp: transaction.timestamp ?? now

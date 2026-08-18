@@ -242,6 +242,9 @@ export interface PortfolioTransaction {
   transactionHash: string;
   blockNumber: number;
   timestamp: number;
+  // 'block' = the mined block's time. Anything else fell back to write time, which is not
+  // when the trade happened.
+  timestampSource?: 'block' | 'local';
 }
 
 export interface PortfolioCache {
