@@ -89,7 +89,7 @@ export const useFatePoolsStorage = (): UseFatePoolsStorageReturn => {
   }, [indexedDB]);
 
   const savePortfolioTransaction = useCallback(async (transaction: Omit<PortfolioTransaction, 'id'>) => {
-    const transactionWithId: Omit<PortfolioTransaction, 'timestamp'> = {
+    const transactionWithId: Omit<PortfolioTransaction, 'timestamp'> & { timestamp?: number } = {
       ...transaction,
       id: `${transaction.userAddress}-${transaction.poolAddress}-${transaction.transactionHash}`
     };

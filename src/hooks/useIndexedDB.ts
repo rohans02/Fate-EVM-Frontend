@@ -48,7 +48,7 @@ interface UseIndexedDBReturn {
   // Portfolio operations
   savePortfolioPosition: (position: Omit<PortfolioPosition, 'lastUpdated'>) => Promise<void>;
   getPortfolioPositions: (userAddress: string, chainId?: SupportedChainId) => Promise<PortfolioPosition[]>;
-  savePortfolioTransaction: (transaction: Omit<PortfolioTransaction, 'timestamp'>) => Promise<void>;
+  savePortfolioTransaction: (transaction: Omit<PortfolioTransaction, 'timestamp'> & { timestamp?: number }) => Promise<void>;
   getPortfolioTransactions: (userAddress: string, chainId?: SupportedChainId) => Promise<PortfolioTransaction[]>;
   savePortfolioCache: (cache: Omit<PortfolioCache, 'lastUpdated'>) => Promise<void>;
   getPortfolioCache: (userAddress: string, chainId: SupportedChainId) => Promise<PortfolioCache | null>;
@@ -239,7 +239,7 @@ export const useIndexedDB = (): UseIndexedDBReturn => {
     return safeReadOperation(() => managerRef.current!.getPortfolioPositions(userAddress, chainId), []);
   }, [safeReadOperation]);
 
-  const savePortfolioTransaction = useCallback(async (transaction: Omit<PortfolioTransaction, 'timestamp'>) => {
+  const savePortfolioTransaction = useCallback(async (transaction: Omit<PortfolioTransaction, 'timestamp'> & { timestamp?: number }) => {
     return safeOperation(() => managerRef.current!.savePortfolioTransaction(transaction));
   }, [safeOperation]);
 
