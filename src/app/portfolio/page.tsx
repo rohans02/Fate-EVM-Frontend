@@ -41,6 +41,7 @@ import { scanLogsChunked, getAbiEvent } from "@/lib/scanLogs";
 import { readScanWatermark, writeScanWatermark } from "@/lib/scanWatermark";
 import { logger } from "@/lib/logger";
 import { getPriceFeedName } from "@/utils/supportedChainFeed";
+import { TradeHistoryCard } from "@/components/Portfolio/TradeHistoryCard";
 import { PredictionPoolFactoryABI } from "@/utils/abi/PredictionPoolFactory";
 import { ChainlinkOracleABI } from "@/utils/abi/ChainlinkOracle";
 import { ERC20ABI } from "@/utils/abi/ERC20";
@@ -220,7 +221,8 @@ const calculateTokenMetricsWithEvents = async (
           totalFeesPaid: 0,
           netInvestment: 0,
           grossInvestment: 0,
-          costBasisUnavailable: true
+          costBasisUnavailable: true,
+          historyIncomplete: true
         };
       }
       const costBasis = userTokens * currentPrice;
@@ -233,7 +235,8 @@ const calculateTokenMetricsWithEvents = async (
         totalFeesPaid: 0,
         netInvestment: 0,
         grossInvestment: 0,
-        costBasisUnavailable: false
+        costBasisUnavailable: false,
+        historyIncomplete: false
       };
     }
 
@@ -486,7 +489,10 @@ const calculateTokenMetricsWithEvents = async (
       totalFeesPaid,
       netInvestment,
       grossInvestment,
-      costBasisUnavailable: false
+      costBasisUnavailable: false,
+      // Cached trades can carry the P&L while the live scan still failed, so the rendered
+      // history is short even though the cost basis is usable.
+      historyIncomplete: scanFailed
     };
 
   } catch (error) {
@@ -500,7 +506,8 @@ const calculateTokenMetricsWithEvents = async (
       totalFeesPaid: 0,
       netInvestment: 0,
       grossInvestment: 0,
-      costBasisUnavailable: true
+      costBasisUnavailable: true,
+      historyIncomplete: true
     };
   }
 };
@@ -692,7 +699,8 @@ const calculateTokenMetrics = (
   const returns =
     userTokens === 0 || avgPrice === 0 ? 0 : (pnL / costBasis) * 100;
 
-  return { price, currentValue, costBasis, pnL, returns, costBasisUnavailable: false };
+  // This path never reads logs, so it has no history to be short of.
+  return { price, currentValue, costBasis, pnL, returns, costBasisUnavailable: false, historyIncomplete: false };
 };
 
 interface PoolData {
@@ -715,6 +723,8 @@ interface PoolData {
   bearReturns: number;
   totalReturnPercentage: number;
   costBasisUnavailable?: boolean;
+  // A log read failed, so the trade list for this pool may be missing rows.
+  historyIncomplete?: boolean;
   color: string;
   bullColor: string;
   bearColor: string;
@@ -1597,6 +1607,7 @@ const EnhancedPoolDataLoader = ({
         bearReturns: bearMetrics.returns,
         totalReturnPercentage: (bullMetrics.costBasis + bearMetrics.costBasis) > 0 ? ((bullMetrics.pnL + bearMetrics.pnL) / (bullMetrics.costBasis + bearMetrics.costBasis)) * 100 : 0,
         costBasisUnavailable: bullMetrics.costBasisUnavailable || bearMetrics.costBasisUnavailable || decimalsCallFailed,
+        historyIncomplete: bullMetrics.historyIncomplete || bearMetrics.historyIncomplete,
         color: CHART_COLORS[index % CHART_COLORS.length],
         bullColor: BULL_COLORS[index % BULL_COLORS.length],
         bearColor: BEAR_COLORS[index % BEAR_COLORS.length],
@@ -2342,6 +2353,12 @@ export default function PortfolioPage() {
     };
   }, [poolsData]);
 
+  // One failed pool is enough to make the whole trade list potentially short.
+  const historyIncomplete = useMemo(
+    () => poolsData.some((pool) => pool.historyIncomplete),
+    [poolsData]
+  );
+
   // Reset data when user or chain changes
   useEffect(() => {
     setPoolsData([]);
@@ -2562,6 +2579,15 @@ export default function PortfolioPage() {
                 chainId={chainId}
               />
             )}
+
+            {/* Itemized buy/sell history over the trades the scan already persisted */}
+            <TradeHistoryCard
+              pools={poolsData}
+              userAddress={address}
+              chainId={chainId}
+              historyIncomplete={historyIncomplete}
+              reloadKey={`${poolsData.length}:${isAllLoadersSettled}`}
+            />
           </div>
         ) : !factoryAddress ? (
           /* Wrong chain / contracts not deployed */
