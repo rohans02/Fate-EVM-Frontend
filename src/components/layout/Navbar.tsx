@@ -6,6 +6,7 @@ import Image from "next/image";
 import logo from "../../../public/logo.svg";
 import { useTheme } from "next-themes";
 import { ModeToggle } from "../darkModeToggle";
+import { SettingsButton } from "./SettingsButton";
 import WalletButton from "../ui/walletButton";
 import BottomNavigation from "./BottomNavigation";
 import { cn } from "@/lib/utils";
@@ -55,7 +56,8 @@ const Navbar: React.FC<NavbarProps> = ({ className = "" }) => {
           </div>
 
           {/* Mobile Mode Toggle */}
-          <div className="flex items-center space-x-4 max-[900px]:flex hidden">
+          <div className="hidden max-[900px]:flex items-center space-x-4">
+            <SettingsButton />
             <ModeToggle />
           </div>
 
@@ -96,6 +98,7 @@ const Navbar: React.FC<NavbarProps> = ({ className = "" }) => {
           {/* Right Side Controls */}
           <div className="hidden min-[900px]:flex items-center space-x-4">
             <ModeToggle />
+            <SettingsButton />
             <WalletButton />
           </div>
         </div>
