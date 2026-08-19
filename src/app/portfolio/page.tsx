@@ -37,7 +37,7 @@ import { CoinABI } from "@/utils/abi/Coin";
 import { FatePoolFactories, FactoryDeploymentBlocks } from "@/utils/addresses";
 import { getChainConfig } from "@/utils/chainConfig";
 import { getTransport, getScanTransport } from "@/utils/rpcTransport";
-import { scanLogsChunked, getAbiEvent } from "@/lib/scanLogs";
+import { scanLogsChunked, getAbiEvent, mapWithConcurrency } from "@/lib/scanLogs";
 import { readScanWatermark, writeScanWatermark } from "@/lib/scanWatermark";
 import { logger } from "@/lib/logger";
 import { getPriceFeedName } from "@/utils/supportedChainFeed";
@@ -181,6 +181,13 @@ const calculateTokenMetricsWithEvents = async (
       minBlock = Math.max(...transactions.map(t => Number(t.blockNumber)));
       console.debug(`Loaded ${transactions.length} cached transactions for ${type}, highest block: ${minBlock}`);
     }
+    // Truncation is only visible on the run that drops rows, and the dropped range is never
+    // rescanned, so the marker has to be read back rather than recomputed.
+    const cachedPositions = await storage.getPortfolioPositions(userAddress, chainId as SupportedChainId);
+    const priorTruncated = cachedPositions.some(
+      (p: PortfolioPosition) => p.id === `${userAddress}-${tokenAddress}-${chainId}` && p.historyTruncated === true
+    );
+
     // A cached row keeps its block number, so a missing time can still be fetched back.
     const backfillBlocks = transactions
       .filter((t: any) => t.timestampSource !== 'block')
@@ -425,8 +432,9 @@ const calculateTokenMetricsWithEvents = async (
     });
     console.debug(`User tokens: ${userTokens}`);
 
-    // Set when older trades get dropped, so the card can say the list is short.
-    let persistTruncated = false;
+    // slice(-30) below keeps at most 30, so anything longer loses its oldest rows.
+    const persistTruncated = sortedTxns.length > 30;
+    const everTruncated = persistTruncated || priorTruncated;
 
     // 4. Save updated position and transactions to IndexedDB
     try {
@@ -460,12 +468,12 @@ const calculateTokenMetricsWithEvents = async (
         totalReceived,
         avgBuyPrice: totalBought > 0 ? totalInvested / totalBought : 0,
         realizedPnL,
-        unrealizedPnL
+        unrealizedPnL,
+        historyTruncated: everTruncated
       };
       await storage.savePortfolioPosition(position);
       // Save only the 30 most recent transactions
       const recentTxns = sortedTxns.slice(-30);
-      persistTruncated = sortedTxns.length > recentTxns.length;
       for (const tx of recentTxns) {
         const portfolioTx: Omit<PortfolioTransaction, 'id'> = {
           userAddress,
@@ -515,7 +523,7 @@ const calculateTokenMetricsWithEvents = async (
       costBasisUnavailable: false,
       // Cached trades can carry the P&L even when the live scan failed, so these differ.
       historyIncomplete: scanFailed,
-      historyTruncated: persistTruncated
+      historyTruncated: everTruncated
     };
 
   } catch (error) {
@@ -555,6 +563,8 @@ const resolveScanFloor = (chainId: number, head: bigint): bigint => {
   return head > lookback ? head - lookback : BigInt(0);
 };
 
+const BLOCK_FETCH_CONCURRENCY = 5;
+
 // A log carries its block number but not the block's time, so each block costs one getBlock.
 const resolveBlockTimestamps = async (
   client: ReturnType<typeof createPublicClient>,
@@ -564,8 +574,8 @@ const resolveBlockTimestamps = async (
   const pending = [...new Set(blockNumbers)].filter((bn) => !into.has(bn));
   if (pending.length === 0) return;
   try {
-    const blocks = await Promise.all(
-      pending.map((blockNumber) => client.getBlock({ blockNumber }).catch(() => null))
+    const blocks = await mapWithConcurrency(pending, BLOCK_FETCH_CONCURRENCY, (blockNumber) =>
+      client.getBlock({ blockNumber }).catch(() => null)
     );
     blocks.forEach((block, index) => {
       if (block) into.set(pending[index], Number(block.timestamp) * 1000);
@@ -2625,16 +2635,6 @@ export default function PortfolioPage() {
                 chainId={chainId}
               />
             )}
-
-            {/* Itemized buy/sell history over the trades the scan already persisted */}
-            <TradeHistoryCard
-              pools={poolsData}
-              userAddress={address}
-              chainId={chainId}
-              historyIncomplete={historyIncomplete}
-              historyTruncated={historyTruncated}
-              reloadKey={`${poolsData.length}:${isAllLoadersSettled}`}
-            />
           </div>
         ) : !factoryAddress ? (
           /* Wrong chain / contracts not deployed */
@@ -2731,6 +2731,20 @@ export default function PortfolioPage() {
                 </Button>
               </div>
             </Card>
+          </div>
+        )}
+
+        {/* Outside the positions branch: a wallet that sold everything still has trades. */}
+        {factoryAddress && (
+          <div className="mt-6">
+            <TradeHistoryCard
+              pools={poolsData}
+              userAddress={address}
+              chainId={chainId}
+              historyIncomplete={historyIncomplete}
+              historyTruncated={historyTruncated}
+              reloadKey={`${poolsData.length}:${isAllLoadersSettled}`}
+            />
           </div>
         )}
       </div>

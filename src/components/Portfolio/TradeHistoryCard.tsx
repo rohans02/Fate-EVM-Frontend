@@ -86,7 +86,7 @@ export const TradeHistoryCard = ({
   historyTruncated: boolean;
   reloadKey?: string | number;
 }) => {
-  const { getPortfolioTransactions, isInitialized } = useFatePoolsStorage();
+  const { getPortfolioTransactions, isInitialized, error: storageError } = useFatePoolsStorage();
   // null = not read yet, so a first paint is a skeleton rather than a false "no trades".
   const [transactions, setTransactions] = useState<PortfolioTransaction[] | null>(null);
   const [page, setPage] = useState(0);
@@ -158,6 +158,30 @@ export const TradeHistoryCard = ({
       </p>
     </CardHeader>
   );
+
+  // isInitialized never turns true when the store fails to open, so without this the
+  // skeleton below would spin forever.
+  if (transactions === null && storageError) {
+    return (
+      <Card className={CARD_CLASS}>
+        {header}
+        <CardContent>
+          <div className={`${NOTICE_CLASS} p-4`}>
+            <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+            <div>
+              <div className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                Local trade cache unavailable
+              </div>
+              <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
+                Trade history is stored in your browser and that store could not be opened, so
+                past trades cannot be shown. Private browsing or a full disk can cause this.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (transactions === null) {
     return (

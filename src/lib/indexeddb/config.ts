@@ -226,6 +226,9 @@ export interface PortfolioPosition {
   avgBuyPrice: number;
   realizedPnL: number;
   unrealizedPnL: number;
+  // Sticky: once trades have been dropped they are never rescanned, so this must survive
+  // a later load that no longer sees the drop.
+  historyTruncated?: boolean;
 }
 
 export interface PortfolioTransaction {
