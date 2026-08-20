@@ -59,7 +59,7 @@ export const exportPortfolioBackup = async (): Promise<ExportResult> => {
 
 // TODO(#67). Filter `schema` as well as `stores`: merge creates whatever the schema declares, so a
 // full nine-store backup would otherwise rebuild the six cache stores we just excluded.
-const keepOnlyBackupStores = (backup: ExportFormat): ExportFormat => {
+export const keepOnlyBackupStores = (backup: ExportFormat): ExportFormat => {
   const keep = <T,>(source: Record<string, T>): Record<string, T> =>
     Object.fromEntries(
       BACKUP_STORE_NAMES.filter((name) => name in source).map((name) => [
