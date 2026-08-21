@@ -49,6 +49,12 @@ const asFile = (contents: unknown, name = "backup.json"): File =>
     type: "application/json",
   });
 
+const withoutField = (backup: ExportFormat, field: keyof ExportFormat): unknown => {
+  const copy: Record<string, unknown> = { ...backup };
+  delete copy[field];
+  return copy;
+};
+
 const summaryOf = (wallets: string[]): BackupSummary =>
   ({ wallets } as unknown as BackupSummary);
 
@@ -203,5 +209,40 @@ describe("readBackupFile", () => {
   it("rejects a backup with no portfolio stores", async () => {
     const backup = makeBackup({ stores: { poolDetails: [row({})] } });
     await expect(readBackupFile(asFile(backup))).rejects.toThrow(/no portfolio data/i);
+  });
+});
+
+// Malformed envelopes, as opposed to well-formed ones carrying wrong values. Each of these reached past the type guard before it was tightened.
+describe("readBackupFile envelope validation", () => {
+  const rejected = (backup: unknown) =>
+    expect(readBackupFile(asFile(backup))).rejects.toThrow(/not a Fate backup/i);
+
+  it("rejects null stores rather than throwing a raw TypeError", async () => {
+    // typeof null === "object", so this used to pass and then die on `name in parsed.stores`.
+    await rejected({ ...makeBackup(), stores: null });
+  });
+
+  it("rejects a missing databaseVersion", async () => {
+    // `undefined > DATABASE_CONFIG.version` is false, so omitting the field skipped the
+    // newer-schema guard entirely.
+    await rejected(withoutField(makeBackup(), "databaseVersion"));
+  });
+
+  it("rejects a non-numeric databaseVersion", async () => {
+    await rejected({ ...makeBackup(), databaseVersion: "4" });
+  });
+
+  it("rejects a store whose value is not an array", async () => {
+    const backup = makeBackup();
+    await rejected({ ...backup, stores: { ...backup.stores, portfolioPositions: {} } });
+  });
+
+  it("rejects a missing exportedAt", async () => {
+    // The settings page renders this straight into toLocaleDateString().
+    await rejected(withoutField(makeBackup(), "exportedAt"));
+  });
+
+  it("still accepts a well-formed envelope", async () => {
+    await expect(readBackupFile(asFile(makeBackup()))).resolves.toBeTruthy();
   });
 });
