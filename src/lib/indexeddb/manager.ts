@@ -364,11 +364,14 @@ export class FatePoolsIndexedDBManager {
     }
   }
 
-  async savePortfolioTransaction(transaction: Omit<PortfolioTransaction, 'timestamp'>): Promise<void> {
+  async savePortfolioTransaction(
+    transaction: Omit<PortfolioTransaction, 'timestamp'> & { timestamp?: number }
+  ): Promise<void> {
     const now = Date.now();
+    // A trade happened when its block was mined, not when this row was written.
     const transactionData: PortfolioTransaction = {
       ...transaction,
-      timestamp: now
+      timestamp: transaction.timestamp ?? now
     };
     await this.db.put('portfolioTransactions', transactionData);
     logger.debug('Portfolio transaction saved:', { transactionId: transaction.id });

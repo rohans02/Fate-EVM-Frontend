@@ -37,10 +37,11 @@ import { CoinABI } from "@/utils/abi/Coin";
 import { FatePoolFactories, FactoryDeploymentBlocks } from "@/utils/addresses";
 import { getChainConfig } from "@/utils/chainConfig";
 import { getTransport, getScanTransport } from "@/utils/rpcTransport";
-import { scanLogsChunked, getAbiEvent } from "@/lib/scanLogs";
+import { scanLogsChunked, getAbiEvent, mapWithConcurrency } from "@/lib/scanLogs";
 import { readScanWatermark, writeScanWatermark } from "@/lib/scanWatermark";
 import { logger } from "@/lib/logger";
 import { getPriceFeedName } from "@/utils/supportedChainFeed";
+import { TradeHistoryCard } from "@/components/Portfolio/TradeHistoryCard";
 import { PredictionPoolFactoryABI } from "@/utils/abi/PredictionPoolFactory";
 import { ChainlinkOracleABI } from "@/utils/abi/ChainlinkOracle";
 import { ERC20ABI } from "@/utils/abi/ERC20";
@@ -172,22 +173,36 @@ const calculateTokenMetricsWithEvents = async (
         price: t.price,
         transactionHash: t.transactionHash,
         feePaid: t.fees,
-        timestamp: t.timestamp
+        timestamp: t.timestamp,
+        timestampSource: t.timestampSource
       }));
     // Get the highest block number from cached transactions
     if (transactions.length > 0) {
       minBlock = Math.max(...transactions.map(t => Number(t.blockNumber)));
       console.debug(`Loaded ${transactions.length} cached transactions for ${type}, highest block: ${minBlock}`);
     }
+    // Truncation is only visible on the run that drops rows, and the dropped range is never
+    // rescanned, so the marker has to be read back rather than recomputed.
+    const cachedPositions = await storage.getPortfolioPositions(userAddress, chainId as SupportedChainId);
+    const priorTruncated = cachedPositions.some(
+      (p: PortfolioPosition) => p.id === `${userAddress}-${tokenAddress}-${chainId}` && p.historyTruncated === true
+    );
+
+    // A cached row keeps its block number, so a missing time can still be fetched back.
+    const backfillBlocks = transactions
+      .filter((t: any) => t.timestampSource !== 'block')
+      .map((t: any) => t.blockNumber as bigint);
+
     // 2. Fetch NEW transactions from blockchain (incremental)
     // Use buffer to avoid missing transactions at block boundaries (reorgs, timing issues)
-    const { transactions: newTransactions, scanFailed, scannedThrough } = await fetchUserTransactions(
+    const { transactions: newTransactions, scanFailed, scannedThrough, blockTimestamps } = await fetchUserTransactions(
       tokenAddress,
       userAddress,
       chainId,
       minBlock,
       baseTokenDecimals,
-      head
+      head,
+      backfillBlocks
     );
 
     // 3. Merge and deduplicate using stable IDs
@@ -208,6 +223,16 @@ const calculateTokenMetricsWithEvents = async (
       }
     }
 
+    // After the ids are settled, so a corrected timestamp cannot change one and split a row in two.
+    for (const tx of transactions) {
+      if (tx.timestampSource === 'block') continue;
+      const resolved = blockTimestamps.get(tx.blockNumber as bigint);
+      if (resolved !== undefined) {
+        tx.timestamp = resolved;
+        tx.timestampSource = 'block';
+      }
+    }
+
     if (transactions.length === 0) {
       // The read failed and nothing was cached, so the cost basis is unknown: show it as unavailable.
       if (scanFailed) {
@@ -220,7 +245,9 @@ const calculateTokenMetricsWithEvents = async (
           totalFeesPaid: 0,
           netInvestment: 0,
           grossInvestment: 0,
-          costBasisUnavailable: true
+          costBasisUnavailable: true,
+          historyIncomplete: true,
+          historyTruncated: false
         };
       }
       const costBasis = userTokens * currentPrice;
@@ -233,7 +260,9 @@ const calculateTokenMetricsWithEvents = async (
         totalFeesPaid: 0,
         netInvestment: 0,
         grossInvestment: 0,
-        costBasisUnavailable: false
+        costBasisUnavailable: false,
+        historyIncomplete: false,
+        historyTruncated: false
       };
     }
 
@@ -403,6 +432,10 @@ const calculateTokenMetricsWithEvents = async (
     });
     console.debug(`User tokens: ${userTokens}`);
 
+    // slice(-30) below keeps at most 30, so anything longer loses its oldest rows.
+    const persistTruncated = sortedTxns.length > 30;
+    const everTruncated = persistTruncated || priorTruncated;
+
     // 4. Save updated position and transactions to IndexedDB
     try {
       let maxBlockNumber = 0;
@@ -435,7 +468,8 @@ const calculateTokenMetricsWithEvents = async (
         totalReceived,
         avgBuyPrice: totalBought > 0 ? totalInvested / totalBought : 0,
         realizedPnL,
-        unrealizedPnL
+        unrealizedPnL,
+        historyTruncated: everTruncated
       };
       await storage.savePortfolioPosition(position);
       // Save only the 30 most recent transactions
@@ -453,7 +487,8 @@ const calculateTokenMetricsWithEvents = async (
           fees: tx.feePaid || 0,
           transactionHash: tx.transactionHash || `${poolAddress}-${type}-${tx.blockNumber}-${tx.amountCoin.toFixed(6)}`,
           blockNumber: Number(tx.blockNumber),
-          timestamp: tx.timestamp || Date.now()
+          timestamp: tx.timestamp || Date.now(),
+          timestampSource: tx.timestampSource ?? 'local'
         };
 
         await storage.savePortfolioTransaction({
@@ -466,9 +501,8 @@ const calculateTokenMetricsWithEvents = async (
       // Only advance once trades are stored, and never past a dropped one: only the newest
       // 30 are kept, and anything above the resume point is never scanned again.
       if (scannedThrough !== null) {
-        const dropped = sortedTxns.length > recentTxns.length;
         const oldestKept = recentTxns.length > 0 ? BigInt(recentTxns[0].blockNumber) : null;
-        const safeBlock = dropped && oldestKept !== null && oldestKept > BigInt(0)
+        const safeBlock = persistTruncated && oldestKept !== null && oldestKept > BigInt(0)
           ? oldestKept - BigInt(1)
           : scannedThrough;
         writeScanWatermark('trades', chainId, tokenAddress, safeBlock, userAddress);
@@ -486,7 +520,10 @@ const calculateTokenMetricsWithEvents = async (
       totalFeesPaid,
       netInvestment,
       grossInvestment,
-      costBasisUnavailable: false
+      costBasisUnavailable: false,
+      // Cached trades can carry the P&L even when the live scan failed, so these differ.
+      historyIncomplete: scanFailed,
+      historyTruncated: everTruncated
     };
 
   } catch (error) {
@@ -500,7 +537,9 @@ const calculateTokenMetricsWithEvents = async (
       totalFeesPaid: 0,
       netInvestment: 0,
       grossInvestment: 0,
-      costBasisUnavailable: true
+      costBasisUnavailable: true,
+      historyIncomplete: true,
+      historyTruncated: false
     };
   }
 };
@@ -524,6 +563,32 @@ const resolveScanFloor = (chainId: number, head: bigint): bigint => {
   return head > lookback ? head - lookback : BigInt(0);
 };
 
+const BLOCK_FETCH_CONCURRENCY = 5;
+
+// A log carries its block number but not the block's time, so each block costs one getBlock.
+const resolveBlockTimestamps = async (
+  client: ReturnType<typeof createPublicClient>,
+  blockNumbers: bigint[],
+  into: Map<bigint, number>
+): Promise<void> => {
+  const pending = [...new Set(blockNumbers)].filter((bn) => !into.has(bn));
+  if (pending.length === 0) return;
+  try {
+    const blocks = await mapWithConcurrency(pending, BLOCK_FETCH_CONCURRENCY, (blockNumber) =>
+      client.getBlock({ blockNumber }).catch(() => null)
+    );
+    blocks.forEach((block, index) => {
+      if (block) into.set(pending[index], Number(block.timestamp) * 1000);
+    });
+    logger.debug('resolveBlockTimestamps: done', {
+      requested: pending.length,
+      resolved: blocks.filter(Boolean).length
+    });
+  } catch (error) {
+    logger.warn('resolveBlockTimestamps: batch failed', { error });
+  }
+};
+
 // Fetch user transactions from blockchain events
 const fetchUserTransactions = async (
   tokenAddress: string,
@@ -531,10 +596,12 @@ const fetchUserTransactions = async (
   chainId: number,
   minBlock: number,
   baseTokenDecimals: number,
-  head: bigint
+  head: bigint,
+  backfillBlocks: bigint[] = []
 ) => {
   // Set when a read fails, so the caller can tell "no history" from "couldn't read history".
   let scanFailed = false;
+  const blockTimestamps = new Map<bigint, number>();
   try {
     console.debug(`Fetching transactions for token: ${tokenAddress}, user: ${userAddress}, chain: ${chainId}`, {
       tokenAddress,
@@ -545,7 +612,7 @@ const fetchUserTransactions = async (
     const chainConfig = getChainConfig(chainId);
     if (!chainConfig) {
       console.warn('No chain config found for chainId:', { chainId });
-      return { transactions: [], scanFailed: true, scannedThrough: null };
+      return { transactions: [], scanFailed: true, scannedThrough: null, blockTimestamps };
     }
 
     const publicClient = createPublicClient({
@@ -565,7 +632,9 @@ const fetchUserTransactions = async (
       : floor;
 
     if (fromBlock > head) {
-      return { transactions: [], scanFailed: false, scannedThrough: null };
+      // Nothing new to scan, but cached rows may still be waiting on a timestamp.
+      await resolveBlockTimestamps(publicClient, backfillBlocks, blockTimestamps);
+      return { transactions: [], scanFailed: false, scannedThrough: null, blockTimestamps };
     }
 
     // One pass with no address filter, then match in JS. Same call count, and filtering on the
@@ -608,29 +677,11 @@ const fetchUserTransactions = async (
 
     // Batch fetch block timestamps for accuracy
     const allLogs = [...buyLogs, ...sellLogs];
-    const uniqueBlockNumbers = [...new Set(allLogs.map(log => log.blockNumber))];
-
-    const blockTimestamps = new Map<bigint, number>();
-
-    // Fetch all unique blocks in parallel
-    try {
-      const blocks = await Promise.all(
-        uniqueBlockNumbers.map(blockNumber =>
-          publicClient.getBlock({ blockNumber }).catch(() => null)
-        )
-      );
-
-      blocks.forEach((block, index) => {
-        if (block) {
-          // Convert block timestamp to milliseconds
-          blockTimestamps.set(uniqueBlockNumbers[index], Number(block.timestamp) * 1000);
-        }
-      });
-
-      console.debug(`Fetched timestamps for ${blockTimestamps.size} blocks`);
-    } catch (error) {
-      console.warn('Failed to fetch some block timestamps, using fallback', error);
-    }
+    await resolveBlockTimestamps(
+      publicClient,
+      [...allLogs.map(log => log.blockNumber), ...backfillBlocks],
+      blockTimestamps
+    );
 
     const transactions: Array<{
       type: 'buy' | 'sell';
@@ -641,11 +692,14 @@ const fetchUserTransactions = async (
       transactionHash?: string;
       feePaid?: number;
       timestamp?: number;
+      timestampSource?: 'block' | 'local';
     }> = [];
 
     // amountAsset and feePaid use the base token's decimals; only amountCoin is always 18.
     const toTransaction = (log: typeof buyLogs[number], type: 'buy' | 'sell') => {
       const args = log.args as { amountAsset?: bigint; amountCoin?: bigint; feePaid?: bigint };
+      // The fallback to now keeps ordering sane but is not a trade time, so record which it is.
+      const blockTimestamp = blockTimestamps.get(log.blockNumber);
       const amountAsset = Number(formatUnits(args.amountAsset ?? BigInt(0), baseTokenDecimals));
       const amountCoin = Number(formatUnits(args.amountCoin ?? BigInt(0), 18));
 
@@ -657,7 +711,8 @@ const fetchUserTransactions = async (
         price: amountCoin > 0 ? amountAsset / amountCoin : 0,
         transactionHash: log.transactionHash ?? undefined,
         feePaid: Number(formatUnits(args.feePaid ?? BigInt(0), baseTokenDecimals)),
-        timestamp: blockTimestamps.get(log.blockNumber) || Date.now()
+        timestamp: blockTimestamp ?? Date.now(),
+        timestampSource: (blockTimestamp !== undefined ? 'block' : 'local') as 'block' | 'local'
       };
     };
 
@@ -670,11 +725,11 @@ const fetchUserTransactions = async (
       transactionCount: transactions.length,
       baseTokenDecimals
     });
-    return { transactions, scanFailed, scannedThrough };
+    return { transactions, scanFailed, scannedThrough, blockTimestamps };
 
   } catch (error) {
     console.error('Error fetching transactions:', error instanceof Error ? error : new Error(String(error)));
-    return { transactions: [], scanFailed: true, scannedThrough: null };
+    return { transactions: [], scanFailed: true, scannedThrough: null, blockTimestamps };
   }
 };
 
@@ -692,7 +747,8 @@ const calculateTokenMetrics = (
   const returns =
     userTokens === 0 || avgPrice === 0 ? 0 : (pnL / costBasis) * 100;
 
-  return { price, currentValue, costBasis, pnL, returns, costBasisUnavailable: false };
+  // This path never reads logs, so it has no history to be short of.
+  return { price, currentValue, costBasis, pnL, returns, costBasisUnavailable: false, historyIncomplete: false, historyTruncated: false };
 };
 
 interface PoolData {
@@ -715,6 +771,10 @@ interface PoolData {
   bearReturns: number;
   totalReturnPercentage: number;
   costBasisUnavailable?: boolean;
+  // A log read failed, so the trade list for this pool may be missing rows.
+  historyIncomplete?: boolean;
+  // The store dropped older trades, as opposed to historyIncomplete's failed read.
+  historyTruncated?: boolean;
   color: string;
   bullColor: string;
   bearColor: string;
@@ -1597,6 +1657,8 @@ const EnhancedPoolDataLoader = ({
         bearReturns: bearMetrics.returns,
         totalReturnPercentage: (bullMetrics.costBasis + bearMetrics.costBasis) > 0 ? ((bullMetrics.pnL + bearMetrics.pnL) / (bullMetrics.costBasis + bearMetrics.costBasis)) * 100 : 0,
         costBasisUnavailable: bullMetrics.costBasisUnavailable || bearMetrics.costBasisUnavailable || decimalsCallFailed,
+        historyIncomplete: bullMetrics.historyIncomplete || bearMetrics.historyIncomplete,
+        historyTruncated: bullMetrics.historyTruncated || bearMetrics.historyTruncated,
         color: CHART_COLORS[index % CHART_COLORS.length],
         bullColor: BULL_COLORS[index % BULL_COLORS.length],
         bearColor: BEAR_COLORS[index % BEAR_COLORS.length],
@@ -2342,6 +2404,17 @@ export default function PortfolioPage() {
     };
   }, [poolsData]);
 
+  // One failed pool is enough to make the whole trade list potentially short.
+  const historyIncomplete = useMemo(
+    () => poolsData.some((pool) => pool.historyIncomplete),
+    [poolsData]
+  );
+
+  const historyTruncated = useMemo(
+    () => poolsData.some((pool) => pool.historyTruncated),
+    [poolsData]
+  );
+
   // Reset data when user or chain changes
   useEffect(() => {
     setPoolsData([]);
@@ -2658,6 +2731,20 @@ export default function PortfolioPage() {
                 </Button>
               </div>
             </Card>
+          </div>
+        )}
+
+        {/* Outside the positions branch: a wallet that sold everything still has trades. */}
+        {factoryAddress && (
+          <div className="mt-6">
+            <TradeHistoryCard
+              pools={poolsData}
+              userAddress={address}
+              chainId={chainId}
+              historyIncomplete={historyIncomplete}
+              historyTruncated={historyTruncated}
+              reloadKey={`${poolsData.length}:${isAllLoadersSettled}`}
+            />
           </div>
         )}
       </div>

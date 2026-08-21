@@ -226,6 +226,9 @@ export interface PortfolioPosition {
   avgBuyPrice: number;
   realizedPnL: number;
   unrealizedPnL: number;
+  // Sticky: once trades have been dropped they are never rescanned, so this must survive
+  // a later load that no longer sees the drop.
+  historyTruncated?: boolean;
 }
 
 export interface PortfolioTransaction {
@@ -242,6 +245,9 @@ export interface PortfolioTransaction {
   transactionHash: string;
   blockNumber: number;
   timestamp: number;
+  // 'block' = the mined block's time. Anything else fell back to write time, which is not
+  // when the trade happened.
+  timestampSource?: 'block' | 'local';
 }
 
 export interface PortfolioCache {
