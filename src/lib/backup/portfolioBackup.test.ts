@@ -1,4 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// The helpers under test are pure. Only readBackupFile reaches for the browser, via the
+// library's assertBrowser and its FileReader wrapper, so those two are stubbed rather than
+// pulling in a whole DOM. Real File objects and real JSON parsing are kept.
+vi.mock("@aossie-org/idb-backup", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@aossie-org/idb-backup")>()),
+  assertBrowser: () => {},
+  readFileAsJSON: async (file: File) => JSON.parse(await file.text()),
+}));
 import { BACKUP_VERSION, type ExportFormat } from "@aossie-org/idb-backup";
 import { DATABASE_CONFIG } from "@/lib/indexeddb/config";
 import {
