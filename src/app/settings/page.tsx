@@ -38,6 +38,7 @@ export default function SettingsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [isExporting, setIsExporting] = useState(false);
+  const [isReading, setIsReading] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
   const [pending, setPending] = useState<BackupSummary | null>(null);
 
@@ -69,6 +70,7 @@ export default function SettingsPage() {
     if (!file) return;
 
     setPending(null);
+    setIsReading(true);
     try {
       setPending(await readBackupFile(file));
     } catch (error) {
@@ -76,6 +78,8 @@ export default function SettingsPage() {
         fileName: file.name,
       });
       toast.error(asError(error).message);
+    } finally {
+      setIsReading(false);
     }
   };
 
@@ -96,7 +100,7 @@ export default function SettingsPage() {
     }
   };
 
-  const foreignWallets = pending ? walletMismatch(pending, address) : [];
+  const foreignWallets = pending && address ? walletMismatch(pending, address) : [];
   const unknownWallet = pending !== null && pending.wallets.length === 0;
   const canRestore =
     pending !== null && !!address && !unknownWallet && foreignWallets.length === 0;
@@ -155,10 +159,15 @@ export default function SettingsPage() {
               <Button
                 onClick={() => fileInputRef.current?.click()}
                 variant="outline"
+                disabled={isReading}
                 className="border-neutral-300 dark:border-neutral-600 hover:bg-yellow-50 dark:hover:bg-yellow-950/30"
               >
-                <Upload className="h-4 w-4 mr-2" />
-                Choose a backup file
+                {isReading ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Upload className="h-4 w-4 mr-2" />
+                )}
+                {isReading ? "Reading..." : "Choose a backup file"}
               </Button>
               <p className="text-xs text-neutral-500 dark:text-neutral-400">
                 Restoring adds to what is already here.

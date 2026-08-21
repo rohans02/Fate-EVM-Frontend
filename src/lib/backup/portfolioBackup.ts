@@ -94,11 +94,20 @@ export interface BackupSummary {
   wallets: Address[];
 }
 
-const isExportFormat = (value: unknown): value is ExportFormat =>
-  typeof value === "object" &&
-  value !== null &&
-  typeof (value as ExportFormat).databaseName === "string" &&
-  typeof (value as ExportFormat).stores === "object";
+// Every field read below is checked here. `typeof null === "object"`, and an absent
+// `databaseVersion` would make the newer-schema comparison silently false, so both are explicit.
+const isExportFormat = (value: unknown): value is ExportFormat => {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<ExportFormat>;
+  return (
+    typeof candidate.databaseName === "string" &&
+    typeof candidate.databaseVersion === "number" &&
+    typeof candidate.exportedAt === "string" &&
+    typeof candidate.stores === "object" &&
+    candidate.stores !== null &&
+    Object.values(candidate.stores).every(Array.isArray)
+  );
+};
 
 // All of this runs before the first write, so a bad file is rejected outright rather than merged
 // halfway into a state nobody can reason about.
