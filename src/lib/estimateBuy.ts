@@ -9,6 +9,10 @@ const WAD_DECIMALS = BigInt(18);
 
 export const DENOMINATOR = BigInt(100000);
 
+// Warn when the rounded fee runs more than 10% above the nominal one, which only happens on dust.
+const ROUNDING_WARN_NUM = BigInt(11);
+const ROUNDING_WARN_DEN = BigInt(10);
+
 // Coin.sol:335
 function divUp(a: bigint, b: bigint): bigint {
   return (a + b - ONE) / b;
@@ -73,6 +77,9 @@ export type BuyQuote = {
   amountAfterFees: bigint;
   coinsOut: bigint;          // WAD
   effectivePrice: bigint;    // paid per coin incl. fees, scaled by DENOMINATOR
+  nominalFeeRate: bigint;    // the pool's three fees summed, DENOMINATOR terms
+  effectiveFeeRate: bigint;  // what this amount actually pays, DENOMINATOR terms
+  feeRoundingInflated: boolean;
 };
 
 // Each case is a real buy() revert.
@@ -111,6 +118,16 @@ export function estimateBuy(input: BuyQuoteInput): BuyQuoteResult {
 
   const amountAfterFees = amountIn - totalFees;
 
+  // Cross-multiplied, not divided: dividing first would discard the precision being measured.
+  const nominalFeeRate = mintFee + treasuryFee + creatorFee;
+  const effectiveFeeRate =
+    amountIn === ZERO ? ZERO : (totalFees * DENOMINATOR) / amountIn;
+  const feeRoundingInflated =
+    amountIn > ZERO &&
+    nominalFeeRate > ZERO &&
+    totalFees * DENOMINATOR * ROUNDING_WARN_DEN >
+      amountIn * nominalFeeRate * ROUNDING_WARN_NUM;
+
   // priceBuy() (Coin.sol:148) off the post-rebalance reserve.
   const price =
     totalSupply === ZERO
@@ -127,6 +144,7 @@ export function estimateBuy(input: BuyQuoteInput): BuyQuoteResult {
     quote: {
       amountIn, vaultAmount, treasuryAmount, creatorAmount,
       totalFees, amountAfterFees, coinsOut, effectivePrice,
+      nominalFeeRate, effectiveFeeRate, feeRoundingInflated,
     },
   };
 }
