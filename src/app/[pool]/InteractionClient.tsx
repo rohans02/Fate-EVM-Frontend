@@ -257,6 +257,10 @@ const BUY_QUOTE_MESSAGES: Record<BuyQuoteFailure, string> = {
 
 // Display only; the arithmetic is done in bigint upstream.
 const DISPLAY_DECIMALS = 6;
+
+// DENOMINATOR-scaled: a thousandth is a percent, and a quote fails past 100%, so Number is safe.
+const formatFeeRate = (rate: bigint): string =>
+  `${(Number(rate) / 1000).toLocaleString(undefined, { maximumFractionDigits: 3 })}%`;
 const MIN_DISPLAY = `<${(10 ** -DISPLAY_DECIMALS).toFixed(DISPLAY_DECIMALS)}`;
 
 // Show a nonzero amount below the display cap as "<0.000001", not a "0" that hides a real charge.
@@ -808,6 +812,14 @@ function VaultSection({ isBull, poolData, userTokens, price, value, symbol, conn
                           <span>{formatBase(buyQuote.quote.creatorAmount, baseDecimals)}</span>
                         </div>
                       </div>
+
+                      {buyQuote.quote.feeRoundingInflated && (
+                        <p className="text-amber-700 dark:text-amber-500">
+                          Due to rounding of small values, this transaction will incur a fee of{" "}
+                          {formatFeeRate(buyQuote.quote.effectiveFeeRate)} instead of the typical{" "}
+                          {formatFeeRate(buyQuote.quote.nominalFeeRate)}.
+                        </p>
+                      )}
 
                       <div className="flex justify-between border-t border-neutral-200 pt-1.5 dark:border-neutral-700">
                         <span className="text-gray-600 dark:text-gray-400">You receive</span>
