@@ -825,7 +825,7 @@ function ExploreFatePoolsClient() {
           filteredPools={filteredPools}
           groupedPools={groupedPools}
           sortedChainIds={sortedChainIds}
-          searchQuery={searchQuery}
+          searchQuery={debouncedSearchQuery}
           onUsePool={handleUsePool}
           onClearSearch={clearSearch}
           currentChainId={currentChainId}
