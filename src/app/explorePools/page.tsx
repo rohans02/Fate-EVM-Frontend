@@ -13,6 +13,7 @@ import { useRouter } from "next/navigation";
 import { formatUnits, isAddress, createPublicClient } from "viem";
 import type { Address, PublicClient } from "viem";
 import { FatePoolFactories } from "@/utils/addresses";
+import { getOracleVerdict, isPoolDenied } from "@/utils/oracleAllowlist";
 import { getPriceFeedName } from "@/utils/supportedChainFeed";
 import { getChainConfig } from "@/utils/chainConfig";
 import { getTransport, getScanTransport } from "@/utils/rpcTransport";
@@ -281,6 +282,7 @@ function ExploreFatePoolsClient() {
           const batch = poolAddresses.slice(i, i + BATCH_SIZE);
           const batchPromises = batch.map(async (addr: Address): Promise<Pool | null> => {
             if (!isAddress(addr)) { logger.warn(`Invalid pool address: ${addr}`); return null; }
+            if (isPoolDenied(chainId, addr)) { logger.debug(`Pool ${addr} hidden: pool is denied`, { chainId }); return null; }
             const [name, baseToken, oracleAddress, bullAddr, bearAddr, vaultCreator, mintFee, burnFee, creatorFee, treasuryFee] = await Promise.all([
               publicClient.readContract({ address: addr, abi: PredictionPoolABI, functionName: "poolName" }).catch((): string => "Unknown Pool"),
               publicClient.readContract({ address: addr, abi: PredictionPoolABI, functionName: "baseToken" }).catch((): Address => "0x0000000000000000000000000000000000000000"),
@@ -293,6 +295,12 @@ function ExploreFatePoolsClient() {
               publicClient.readContract({ address: addr, abi: PredictionPoolABI, functionName: "creatorFee" }).catch((): bigint => BigInt(0)),
               publicClient.readContract({ address: addr, abi: PredictionPoolABI, functionName: "treasuryFee" }).catch((): bigint => BigInt(0)),
             ]);
+
+            const verdict = await getOracleVerdict(publicClient as PublicClient, chainId, oracleAddress as Address);
+            if (!verdict.trusted) {
+              logger.debug(`Pool ${addr} hidden: oracle ${oracleAddress} is ${verdict.reason}`, { chainId });
+              return null;
+            }
 
             // Get the underlying pricefeed address from the ChainlinkOracle contract
             // The factory creates a wrapper oracle that references the actual Chainlink pricefeed
