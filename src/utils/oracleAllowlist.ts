@@ -56,6 +56,11 @@ const isFromKnownFactory = async (
         args: [feed],
       }) as Promise<Address>;
       adapterByFeed.set(key, adapter);
+      // A failed or empty lookup must not stick, or the oracle stays untrusted after its adapter exists.
+      adapter.then(
+        (found) => { if (isAddressEqual(found, zeroAddress)) adapterByFeed.delete(key); },
+        () => adapterByFeed.delete(key),
+      );
     }
 
     const cached = await adapter;
