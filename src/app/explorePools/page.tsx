@@ -367,7 +367,7 @@ function ExploreFatePoolsClient() {
               baseDecimals,
               headBlock
             ).catch(() => undefined);
-            const pool: Pool = { id: addr, name: name as string, volumeRecent, baseToken: baseToken as Address, priceFeedAddress: underlyingPriceFeedAddress, creator: vaultCreator as Address, bullPercentage: bullPercentage, bearPercentage: bearPercentage, bullToken: bull, bearToken: bear, chainId, chainName: chainConfig.name, vaultFee: Number(mintFee) / DENOMINATOR * 100, vaultCreatorFee: Number(creatorFee) / DENOMINATOR * 100, treasuryFee: Number(treasuryFee) / DENOMINATOR * 100, mintFee: Number(mintFee) / DENOMINATOR * 100, burnFee: Number(burnFee) / DENOMINATOR * 100, previous_price: BigInt(0), baseDecimals, baseSymbol, tvl };
+            const pool: Pool = { id: addr, name: name as string, volumeRecent, baseToken: baseToken as Address, priceFeedAddress: underlyingPriceFeedAddress, oracleAddress: oracleAddress as Address, creator: vaultCreator as Address, bullPercentage: bullPercentage, bearPercentage: bearPercentage, bullToken: bull, bearToken: bear, chainId, chainName: chainConfig.name, vaultFee: Number(mintFee) / DENOMINATOR * 100, vaultCreatorFee: Number(creatorFee) / DENOMINATOR * 100, treasuryFee: Number(treasuryFee) / DENOMINATOR * 100, mintFee: Number(mintFee) / DENOMINATOR * 100, burnFee: Number(burnFee) / DENOMINATOR * 100, previous_price: BigInt(0), baseDecimals, baseSymbol, tvl };
             return pool;
           });
           const successfulPools = (await Promise.all(batchPromises)).filter((pool): pool is Pool => pool !== null);
@@ -384,7 +384,8 @@ function ExploreFatePoolsClient() {
             assetAddress: pool.baseToken,
             baseTokenSymbol: pool.baseSymbol,
             baseDecimals: pool.baseDecimals,
-            oracleAddress: pool.priceFeedAddress,
+            oracleAddress: pool.oracleAddress ?? pool.priceFeedAddress,
+            priceFeedAddress: pool.priceFeedAddress,
             currentPrice: 0, // Will be updated with real price data
             bullReserve: "0",
             bearReserve: "0",
@@ -433,11 +434,15 @@ function ExploreFatePoolsClient() {
       // safeReadOperation-backed calls return [] on failure, never throw
       const cachedPools = await getAllPools();
       const filteredPools = cachedPools.filter(p => p.chainId === chainId);
-      updateChainState(chainId, { poolCount: filteredPools.length, loading: false });
+      // Cached pools go through the same listing policy as live ones.
+      const cacheClient = createPublicClient({ chain: chainConfig.chain, transport: getTransport(chainId) });
 
       const convertedPools: Pool[] = [];
       if (filteredPools.length > 0) {
         for (const poolDetails of filteredPools) {
+          if (isPoolDenied(chainId, poolDetails.id as Address)) continue;
+          const verdict = await getOracleVerdict(cacheClient as PublicClient, chainId, poolDetails.oracleAddress as Address);
+          if (!verdict.trusted) continue;
           const tokenDetails = await getTokensForPool(poolDetails.id);
           if (tokenDetails.length === 2) {
             const bullDetails = tokenDetails.find(t => t.tokenType === 'bull');
@@ -477,7 +482,8 @@ function ExploreFatePoolsClient() {
                   id: poolDetails.id as Address,
                   name: poolDetails.name,
                   baseToken: poolDetails.assetAddress as Address,
-                  priceFeedAddress: poolDetails.oracleAddress as Address,
+                  priceFeedAddress: (poolDetails.priceFeedAddress ?? poolDetails.oracleAddress) as Address,
+                  oracleAddress: poolDetails.oracleAddress as Address,
                   creator: poolDetails.vaultCreator as Address,
                   chainId: poolDetails.chainId,
                   chainName: poolDetails.chainName || 'Unknown',
@@ -500,6 +506,7 @@ function ExploreFatePoolsClient() {
             }
           }
         }
+      updateChainState(chainId, { poolCount: convertedPools.length, loading: false });
       if (isOnline && convertedPools.length > 0) {
         try {
           const volumeClient = createPublicClient({

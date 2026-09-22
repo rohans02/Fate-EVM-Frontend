@@ -1,4 +1,4 @@
-import { isAddressEqual, zeroAddress } from "viem";
+import { isAddress, isAddressEqual, zeroAddress } from "viem";
 import type { Address, PublicClient } from "viem";
 import { ChainlinkAdapterFactories } from "./addresses";
 import { ChainlinkAdapterFactoryABI } from "./abi/ChainlinkAdapterFactory";
@@ -25,7 +25,7 @@ export type OracleVerdict =
   | { trusted: false; reason: "denied" | "not-listed" };
 
 const includes = (list: readonly Address[] | undefined, oracle: Address): boolean =>
-  !!list?.some((entry) => isAddressEqual(entry, oracle));
+  isAddress(oracle) && !!list?.some((entry) => isAddressEqual(entry, oracle));
 
 // Price feed -> adapter, so pools that share a feed only ask the factory once.
 const adapterByFeed = new Map<string, Promise<Address>>();
