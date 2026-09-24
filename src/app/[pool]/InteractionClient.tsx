@@ -476,6 +476,9 @@ function VaultSection({ isBull, poolData, userTokens, price, value, symbol, conn
     });
   }, [sellAmount, baseDecimals, isBull, poolData]);
 
+  // The chain would burn the coins and pay nothing, so do not offer the transaction at all.
+  const sellPaysNothing = sellQuote !== null && !sellQuote.ok && sellQuote.reason === 'rounds-to-zero';
+
 
 
 
@@ -994,7 +997,7 @@ function VaultSection({ isBull, poolData, userTokens, price, value, symbol, conn
               <Button
                 onClick={() => handleSell()}
                 className="w-full bg-gray-100 hover:bg-gray-200 text-black border border-gray-300"
-                disabled={!sellAmount || !connected || isTransacting}
+                disabled={!sellAmount || !connected || isTransacting || sellPaysNothing}
               >
                 {isTransacting ? 'Processing...' : `Sell ${symbol} Tokens`}
               </Button>
