@@ -152,11 +152,11 @@ export default function SettingsPage() {
             <div className="grid gap-x-6 gap-y-4 sm:grid-cols-[max-content_1fr] sm:items-center">
               <Button
                 onClick={handleExport}
-                disabled={isExporting}
+                disabled={isExporting || isClearing}
                 className="bg-black hover:bg-gray-800 dark:bg-white dark:hover:bg-gray-200 text-white dark:text-black"
               >
                 {isExporting ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  <Loader2 className="h-4 w-4 mr-2 motion-safe:animate-spin" />
                 ) : (
                   <Download className="h-4 w-4 mr-2" />
                 )}
@@ -178,11 +178,11 @@ export default function SettingsPage() {
               <Button
                 onClick={() => fileInputRef.current?.click()}
                 variant="outline"
-                disabled={isReading}
+                disabled={isReading || isClearing}
                 className="border-neutral-300 dark:border-neutral-600 hover:bg-yellow-50 dark:hover:bg-yellow-950/30"
               >
                 {isReading ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  <Loader2 className="h-4 w-4 mr-2 motion-safe:animate-spin" />
                 ) : (
                   <Upload className="h-4 w-4 mr-2" />
                 )}
@@ -254,10 +254,10 @@ export default function SettingsPage() {
                   <div className="flex gap-3 pt-1">
                     <Button
                       onClick={handleRestore}
-                      disabled={!canRestore || isRestoring}
+                      disabled={!canRestore || isRestoring || isClearing}
                       className="bg-black hover:bg-gray-800 dark:bg-white dark:hover:bg-gray-200 text-white dark:text-black"
                     >
-                      {isRestoring && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      {isRestoring && <Loader2 className="h-4 w-4 mr-2 motion-safe:animate-spin" />}
                       {isRestoring ? "Restoring..." : "Restore this backup"}
                     </Button>
                     <Button
@@ -290,7 +290,7 @@ export default function SettingsPage() {
               <Button
                 onClick={() => setConfirmClear(true)}
                 variant="outline"
-                disabled={!isCacheReady || isRestoring || isReading}
+                disabled={!isCacheReady || isRestoring || isReading || isExporting}
                 className="border-neutral-300 dark:border-neutral-600 hover:bg-red-50 dark:hover:bg-red-950/30"
               >
                 <Trash2 className="h-4 w-4 mr-2" />
@@ -305,10 +305,10 @@ export default function SettingsPage() {
                 <div className="flex gap-3">
                   <Button
                     onClick={handleClearCache}
-                    disabled={isClearing}
+                    disabled={isClearing || isExporting || isReading || isRestoring}
                     className="bg-black hover:bg-gray-800 dark:bg-white dark:hover:bg-gray-200 text-white dark:text-black"
                   >
-                    {isClearing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    {isClearing && <Loader2 className="h-4 w-4 mr-2 motion-safe:animate-spin" />}
                     {isClearing ? "Clearing..." : "Clear"}
                   </Button>
                   <Button
